@@ -23,20 +23,22 @@ import {
   FetchFunction,
   generateId,
   InferSchema,
-  parseProviderOptions,
   ParseResult,
+  parseProviderOptions,
   postJsonToApi,
   Resolvable,
   resolve,
 } from '@ai-sdk/provider-utils';
+
 import { anthropicFailedResponseHandler } from './anthropic-error';
 import { AnthropicMessageMetadata } from './anthropic-message-metadata';
 import {
   AnthropicContainer,
-  anthropicMessagesChunkSchema,
-  anthropicMessagesResponseSchema,
+  AnthropicMessagesPrompt,
   AnthropicReasoningMetadata,
   AnthropicResponseContextManagement,
+  anthropicMessagesChunkSchema,
+  anthropicMessagesResponseSchema,
   Citation,
 } from './anthropic-messages-api';
 import {
@@ -52,13 +54,15 @@ import { convertToAnthropicMessagesPrompt } from './convert-to-anthropic-message
 import { CacheControlValidator } from './get-cache-control';
 import { mapAnthropicStopReason } from './map-anthropic-stop-reason';
 
+type ExtractedCitationDocument = {
+  title: string;
+  filename?: string;
+  mediaType: string;
+};
+
 function createCitationSource(
   citation: Citation,
-  citationDocuments: Array<{
-    title: string;
-    filename?: string;
-    mediaType: string;
-  }>,
+  citationDocuments: Array<ExtractedCitationDocument>,
   generateId: () => string,
 ): LanguageModelV3Source | undefined {
   if (citation.type === 'web_search_result_location') {
@@ -680,17 +684,13 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV3 {
     return this.config.transformRequestBody?.(args) ?? args;
   }
 
-  private extractCitationDocuments(prompt: LanguageModelV3Prompt): Array<{
-    title: string;
-    filename?: string;
-    mediaType: string;
-  }> {
+  private extractCitationDocuments(prompt: LanguageModelV3Prompt): Array<ExtractedCitationDocument> {
     const isCitationPart = (part: {
       type: string;
       mediaType?: string;
       providerOptions?: { anthropic?: { citations?: { enabled?: boolean } } };
     }) => {
-      if (part.type !== 'file') {
+      if (part.type !== 'file' && part.type !== 'file-data') {
         return false;
       }
 
@@ -708,7 +708,7 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV3 {
       return citationsConfig?.enabled ?? false;
     };
 
-    return prompt
+    const documentsFromUserContent = prompt
       .filter(message => message.role === 'user')
       .flatMap(message => message.content)
       .filter(isCitationPart)
@@ -721,6 +721,27 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV3 {
           mediaType: filePart.mediaType,
         };
       });
+
+    const documentsFromToolResults = prompt
+      .filter(message => message.role === 'tool')
+      .flatMap(message => message.content)
+      .filter(toolResultOrApprovalContent => toolResultOrApprovalContent.type == 'tool-result')
+      .map(toolResultContent => toolResultContent.output)
+      .filter(toolResultOutput => toolResultOutput.type === 'content')
+      .flatMap(toolResultOutput => toolResultOutput.value)
+      .filter(toolResultOutputPart => toolResultOutputPart.type === 'file-data')
+      .filter(isCitationPart)
+      .map(part => {
+        // TypeScript knows this is a file part due to our filter
+        return {
+          title: part.filename ?? 'Untitled Document',
+          filename: part.filename,
+          mediaType: part.mediaType,
+        };
+      });
+
+
+    return documentsFromUserContent.concat(documentsFromToolResults);
   }
 
   async doGenerate(
