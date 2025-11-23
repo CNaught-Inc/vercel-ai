@@ -273,12 +273,13 @@ export async function convertToAnthropicMessagesPrompt({
                       })
                     : undefined);
 
+
                 const output = part.output;
                 let contentValue: AnthropicToolResultContent['content'];
                 switch (output.type) {
                   case 'content':
-                    contentValue = output.value
-                      .map(contentPart => {
+                    contentValue = (await Promise.all(output.value
+                      .map(async contentPart => {
                         switch (contentPart.type) {
                           case 'text':
                             return {
@@ -316,6 +317,15 @@ export async function convertToAnthropicMessagesPrompt({
                           case 'file-data': {
                             if (contentPart.mediaType === 'application/pdf') {
                               betas.add('pdfs-2024-09-25');
+
+                              const enableCitations = await shouldEnableCitations(
+                                contentPart.providerOptions,
+                              );
+
+                              const metadata = await getDocumentMetadata(
+                                contentPart.providerOptions,
+                              );
+
                               return {
                                 type: 'document' as const,
                                 source: {
@@ -323,6 +333,35 @@ export async function convertToAnthropicMessagesPrompt({
                                   media_type: contentPart.mediaType,
                                   data: contentPart.data,
                                 },
+                                ...(enableCitations && {
+                                  title: metadata.title ?? contentPart.filename ?? 'Untitled Document',
+                                  ...(metadata.context && { context: metadata.context }),
+                                  citations: { enabled: true },
+                                })
+                              };
+                            }
+
+                            if (contentPart.mediaType === 'text/plain') {
+                              const enableCitations = await shouldEnableCitations(
+                                contentPart.providerOptions,
+                              );
+
+                              const metadata = await getDocumentMetadata(
+                                contentPart.providerOptions,
+                              );
+
+                              return {
+                                type: 'document' as const,
+                                source: {
+                                  type: 'text' as const,
+                                  media_type: 'text/plain' as const,
+                                  data: contentPart.data,
+                                },
+                                ...(enableCitations && {
+                                  title: metadata.title ?? contentPart.filename ?? 'Untitled Document',
+                                  ...(metadata.context && { context: metadata.context }),
+                                  citations: { enabled: true },
+                                })
                               };
                             }
 
@@ -342,7 +381,7 @@ export async function convertToAnthropicMessagesPrompt({
                             return undefined;
                           }
                         }
-                      })
+                      })))
                       .filter(isNonNullable);
                     break;
                   case 'text':
