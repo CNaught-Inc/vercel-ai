@@ -34,6 +34,7 @@ import { AnthropicMessageMetadata } from './anthropic-message-metadata';
 import {
   AnthropicContainer,
   anthropicMessagesChunkSchema,
+  AnthropicMessagesPrompt,
   anthropicMessagesResponseSchema,
   AnthropicReasoningMetadata,
   AnthropicResponseContextManagement,
@@ -52,13 +53,15 @@ import { convertToAnthropicMessagesPrompt } from './convert-to-anthropic-message
 import { CacheControlValidator } from './get-cache-control';
 import { mapAnthropicStopReason } from './map-anthropic-stop-reason';
 
+type ExtractedCitationDocument = {
+  title: string;
+  filename?: string;
+  mediaType: string;
+};
+
 function createCitationSource(
   citation: Citation,
-  citationDocuments: Array<{
-    title: string;
-    filename?: string;
-    mediaType: string;
-  }>,
+  citationDocuments: Array<ExtractedCitationDocument>,
   generateId: () => string,
 ): LanguageModelV3Source | undefined {
   if (citation.type !== 'page_location' && citation.type !== 'char_location') {
@@ -587,17 +590,13 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV3 {
     return this.config.transformRequestBody?.(args) ?? args;
   }
 
-  private extractCitationDocuments(prompt: LanguageModelV3Prompt): Array<{
-    title: string;
-    filename?: string;
-    mediaType: string;
-  }> {
+  private extractCitationDocuments(prompt: LanguageModelV3Prompt): Array<ExtractedCitationDocument> {
     const isCitationPart = (part: {
       type: string;
       mediaType?: string;
       providerOptions?: { anthropic?: { citations?: { enabled?: boolean } } };
     }) => {
-      if (part.type !== 'file') {
+      if (part.type !== 'file' && part.type !== 'file-data') {
         return false;
       }
 
@@ -615,7 +614,7 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV3 {
       return citationsConfig?.enabled ?? false;
     };
 
-    return prompt
+    const documentsFromUserContent = prompt
       .filter(message => message.role === 'user')
       .flatMap(message => message.content)
       .filter(isCitationPart)
@@ -628,6 +627,26 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV3 {
           mediaType: filePart.mediaType,
         };
       });
+
+    const documentsFromToolResults = prompt
+      .filter(message => message.role === 'tool')
+      .flatMap(message => message.content)
+      .map(toolResultContent => toolResultContent.output)
+      .filter(toolResultOutput => toolResultOutput.type === 'content')
+      .flatMap(toolResultOutput => toolResultOutput.value)
+      .filter(toolResultOutputPart => toolResultOutputPart.type === 'file-data')
+      .filter(isCitationPart)
+      .map(part => {
+        // TypeScript knows this is a file part due to our filter
+        return {
+          title: part.filename ?? 'Untitled Document',
+          filename: part.filename,
+          mediaType: part.mediaType,
+        };
+      });
+
+
+    return documentsFromUserContent.concat(documentsFromToolResults);
   }
 
   async doGenerate(
@@ -640,7 +659,6 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV3 {
         userSuppliedBetas: await this.getBetasFromHeaders(options.headers),
       });
 
-    // Extract citation documents for response processing
     const citationDocuments = this.extractCitationDocuments(options.prompt);
 
     const {
