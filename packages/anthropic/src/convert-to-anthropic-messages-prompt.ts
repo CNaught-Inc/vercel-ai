@@ -1,25 +1,26 @@
 import {
-  SharedV3Warning,
   LanguageModelV3DataContent,
   LanguageModelV3Message,
   LanguageModelV3Prompt,
   SharedV3ProviderMetadata,
+  SharedV3Warning,
   UnsupportedFunctionalityError,
 } from '@ai-sdk/provider';
 import {
   convertToBase64,
-  parseProviderOptions,
-  validateTypes,
   isNonNullable,
+  parseProviderOptions,
   ToolNameMapping,
+  validateTypes,
 } from '@ai-sdk/provider-utils';
+
 import {
   AnthropicAssistantMessage,
   AnthropicMessagesPrompt,
-  anthropicReasoningMetadataSchema,
   AnthropicToolResultContent,
   AnthropicUserMessage,
   AnthropicWebFetchToolResultContent,
+  anthropicReasoningMetadataSchema,
 } from './anthropic-messages-api';
 import { anthropicFilePartProviderOptions } from './anthropic-messages-options';
 import { CacheControlValidator } from './get-cache-control';
@@ -409,7 +410,17 @@ export async function convertToAnthropicMessagesPrompt({
                             case 'custom': {
                               const anthropicOptions = contentPart
                                 .providerOptions?.anthropic as
-                                | { type: string; toolName?: string }
+                                | { type: 'tool-reference'; toolName?: string }
+                                | {
+                                    type: 'search-result';
+                                    source?: string;
+                                    title?: string;
+                                    content?: Array<{
+                                      type: 'text';
+                                      text: string;
+                                    }>;
+                                    citations?: { enabled: boolean };
+                                  }
                                 | undefined;
                               if (anthropicOptions?.type === 'tool-reference') {
                                 return {
@@ -417,6 +428,19 @@ export async function convertToAnthropicMessagesPrompt({
                                   tool_name: anthropicOptions.toolName!,
                                 };
                               }
+
+                              if (anthropicOptions?.type === 'search-result') {
+                                return {
+                                  type: 'search_result' as const,
+                                  source: anthropicOptions.source ?? '',
+                                  title: anthropicOptions.title ?? '',
+                                  content: anthropicOptions.content ?? [],
+                                  ...(anthropicOptions.citations && {
+                                    citations: anthropicOptions.citations,
+                                  }),
+                                };
+                              }
+
                               warnings.push({
                                 type: 'other',
                                 message: `unsupported custom tool content part`,
