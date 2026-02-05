@@ -82,6 +82,43 @@ function createCitationSource(
     };
   }
 
+  // Handle search result citations (from RAG tool results or third-party web search)
+  if (citation.type === 'search_result_location') {
+    // Check if source is a URL (starts with http:// or https://)
+    const isUrl = /^https?:\/\//i.test(citation.source);
+
+    if (isUrl) {
+      // Treat like web_search_result_location for URL sources
+      return {
+        type: 'source' as const,
+        sourceType: 'url' as const,
+        id: generateId(),
+        url: citation.source,
+        title: citation.title ?? undefined,
+        providerMetadata: {
+          anthropic: {
+            citedText: citation.cited_text,
+          },
+        } satisfies SharedV3ProviderMetadata,
+      };
+    } else {
+      // Treat as document for non-URL sources (e.g., documentId)
+      return {
+        type: 'source' as const,
+        sourceType: 'document' as const,
+        id: generateId(),
+        mediaType: 'text/plain',
+        title: citation.title ?? 'Search Result',
+        providerMetadata: {
+          anthropic: {
+            citedText: citation.cited_text,
+            context: citation.source, // documentId for UI compatibility
+          },
+        } satisfies SharedV3ProviderMetadata,
+      };
+    }
+  }
+
   if (citation.type !== 'page_location' && citation.type !== 'char_location') {
     return;
   }

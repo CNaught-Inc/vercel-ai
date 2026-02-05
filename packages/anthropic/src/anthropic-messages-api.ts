@@ -1,5 +1,6 @@
 import { JSONSchema7 } from '@ai-sdk/provider';
 import { InferSchema, lazySchema, zodSchema } from '@ai-sdk/provider-utils';
+
 import { z } from 'zod/v4';
 
 export type AnthropicMessagesPrompt = {
@@ -180,6 +181,15 @@ export interface AnthropicToolReferenceContent {
   tool_name: string;
 }
 
+// Nested search result content (without cache_control for use inside tool_result)
+type AnthropicNestedSearchResultContent = {
+  type: 'search_result';
+  source: string; // URL or unique identifier (documentId)
+  title: string;
+  content: Array<{ type: 'text'; text: string }>;
+  citations?: { enabled: boolean };
+};
+
 export interface AnthropicToolResultContent {
   type: 'tool_result';
   tool_use_id: string;
@@ -189,6 +199,7 @@ export interface AnthropicToolResultContent {
         | AnthropicNestedTextContent
         | AnthropicNestedImageContent
         | AnthropicNestedDocumentContent
+        | AnthropicNestedSearchResultContent
         | AnthropicToolReferenceContent
       >;
   is_error: boolean | undefined;
@@ -568,6 +579,15 @@ export const anthropicMessagesResponseSchema = lazySchema(() =>
                     url: z.string(),
                     title: z.string(),
                     encrypted_index: z.string(),
+                  }),
+                  z.object({
+                    type: z.literal('search_result_location'),
+                    cited_text: z.string(),
+                    source: z.string(),
+                    title: z.string().nullable(),
+                    search_result_index: z.number(),
+                    start_block_index: z.number(),
+                    end_block_index: z.number(),
                   }),
                   z.object({
                     type: z.literal('page_location'),
@@ -1220,6 +1240,15 @@ export const anthropicMessagesChunkSchema = lazySchema(() =>
                 url: z.string(),
                 title: z.string(),
                 encrypted_index: z.string(),
+              }),
+              z.object({
+                type: z.literal('search_result_location'),
+                cited_text: z.string(),
+                source: z.string(),
+                title: z.string().nullable(),
+                search_result_index: z.number(),
+                start_block_index: z.number(),
+                end_block_index: z.number(),
               }),
               z.object({
                 type: z.literal('page_location'),
