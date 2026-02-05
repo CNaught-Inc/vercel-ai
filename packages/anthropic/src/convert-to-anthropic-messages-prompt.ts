@@ -297,133 +297,146 @@ export async function convertToAnthropicMessagesPrompt({
                       })
                     : undefined);
 
-
                 const output = part.output;
                 let contentValue: AnthropicToolResultContent['content'];
                 switch (output.type) {
                   case 'content':
-                    contentValue = (await Promise.all(output.value
-                      .map(async contentPart => {
-                        switch (contentPart.type) {
-                          case 'text':
-                            return {
-                              type: 'text' as const,
-                              text: contentPart.text,
-                            };
-                          case 'image-data': {
-                            return {
-                              type: 'image' as const,
-                              source: {
-                                type: 'base64' as const,
-                                media_type: contentPart.mediaType,
-                                data: contentPart.data,
-                              },
-                            };
-                          }
-                          case 'image-url': {
-                            return {
-                              type: 'image' as const,
-                              source: {
-                                type: 'url' as const,
-                                url: contentPart.url,
-                              },
-                            };
-                          }
-                          case 'file-url': {
-                            return {
-                              type: 'document' as const,
-                              source: {
-                                type: 'url' as const,
-                                url: contentPart.url,
-                              },
-                            };
-                          }
-                          case 'file-data': {
-                            if (contentPart.mediaType === 'application/pdf') {
-                              betas.add('pdfs-2024-09-25');
-
-                              const enableCitations = await shouldEnableCitations(
-                                contentPart.providerOptions,
-                              );
-
-                              const metadata = await getDocumentMetadata(
-                                contentPart.providerOptions,
-                              );
-
+                    contentValue = (
+                      await Promise.all(
+                        output.value.map(async contentPart => {
+                          switch (contentPart.type) {
+                            case 'text':
                               return {
-                                type: 'document' as const,
+                                type: 'text' as const,
+                                text: contentPart.text,
+                              };
+                            case 'image-data': {
+                              return {
+                                type: 'image' as const,
                                 source: {
                                   type: 'base64' as const,
                                   media_type: contentPart.mediaType,
                                   data: contentPart.data,
                                 },
-                                ...(enableCitations && {
-                                  title: metadata.title ?? contentPart.filename ?? 'Untitled Document',
-                                  ...(metadata.context && { context: metadata.context }),
-                                  citations: { enabled: true },
-                                })
                               };
                             }
-
-                            if (contentPart.mediaType === 'text/plain') {
-                              const enableCitations = await shouldEnableCitations(
-                                contentPart.providerOptions,
-                              );
-
-                              const metadata = await getDocumentMetadata(
-                                contentPart.providerOptions,
-                              );
-
+                            case 'image-url': {
+                              return {
+                                type: 'image' as const,
+                                source: {
+                                  type: 'url' as const,
+                                  url: contentPart.url,
+                                },
+                              };
+                            }
+                            case 'file-url': {
                               return {
                                 type: 'document' as const,
                                 source: {
-                                  type: 'text' as const,
-                                  media_type: 'text/plain' as const,
-                                  data: contentPart.data,
+                                  type: 'url' as const,
+                                  url: contentPart.url,
                                 },
-                                ...(enableCitations && {
-                                  title: metadata.title ?? contentPart.filename ?? 'Untitled Document',
-                                  ...(metadata.context && { context: metadata.context }),
-                                  citations: { enabled: true },
-                                })
                               };
                             }
+                            case 'file-data': {
+                              if (contentPart.mediaType === 'application/pdf') {
+                                betas.add('pdfs-2024-09-25');
 
-                            warnings.push({
-                              type: 'other',
-                              message: `unsupported tool content part type: ${contentPart.type} with media type: ${contentPart.mediaType}`,
-                            });
+                                const enableCitations =
+                                  await shouldEnableCitations(
+                                    contentPart.providerOptions,
+                                  );
 
-                            return undefined;
-                          }
-                          case 'custom': {
-                            const anthropicOptions = contentPart.providerOptions
-                              ?.anthropic as
-                              | { type: string; toolName?: string }
-                              | undefined;
-                            if (anthropicOptions?.type === 'tool-reference') {
-                              return {
-                                type: 'tool_reference' as const,
-                                tool_name: anthropicOptions.toolName!,
-                              };
+                                const metadata = await getDocumentMetadata(
+                                  contentPart.providerOptions,
+                                );
+
+                                return {
+                                  type: 'document' as const,
+                                  source: {
+                                    type: 'base64' as const,
+                                    media_type: contentPart.mediaType,
+                                    data: contentPart.data,
+                                  },
+                                  ...(enableCitations && {
+                                    title:
+                                      metadata.title ??
+                                      contentPart.filename ??
+                                      'Untitled Document',
+                                    ...(metadata.context && {
+                                      context: metadata.context,
+                                    }),
+                                    citations: { enabled: true },
+                                  }),
+                                };
+                              }
+
+                              if (contentPart.mediaType === 'text/plain') {
+                                const enableCitations =
+                                  await shouldEnableCitations(
+                                    contentPart.providerOptions,
+                                  );
+
+                                const metadata = await getDocumentMetadata(
+                                  contentPart.providerOptions,
+                                );
+
+                                return {
+                                  type: 'document' as const,
+                                  source: {
+                                    type: 'text' as const,
+                                    media_type: 'text/plain' as const,
+                                    data: contentPart.data,
+                                  },
+                                  ...(enableCitations && {
+                                    title:
+                                      metadata.title ??
+                                      contentPart.filename ??
+                                      'Untitled Document',
+                                    ...(metadata.context && {
+                                      context: metadata.context,
+                                    }),
+                                    citations: { enabled: true },
+                                  }),
+                                };
+                              }
+
+                              warnings.push({
+                                type: 'other',
+                                message: `unsupported tool content part type: ${contentPart.type} with media type: ${contentPart.mediaType}`,
+                              });
+
+                              return undefined;
                             }
-                            warnings.push({
-                              type: 'other',
-                              message: `unsupported custom tool content part`,
-                            });
-                            return undefined;
-                          }
-                          default: {
-                            warnings.push({
-                              type: 'other',
-                              message: `unsupported tool content part type: ${contentPart.type}`,
-                            });
+                            case 'custom': {
+                              const anthropicOptions = contentPart
+                                .providerOptions?.anthropic as
+                                | { type: string; toolName?: string }
+                                | undefined;
+                              if (anthropicOptions?.type === 'tool-reference') {
+                                return {
+                                  type: 'tool_reference' as const,
+                                  tool_name: anthropicOptions.toolName!,
+                                };
+                              }
+                              warnings.push({
+                                type: 'other',
+                                message: `unsupported custom tool content part`,
+                              });
+                              return undefined;
+                            }
+                            default: {
+                              warnings.push({
+                                type: 'other',
+                                message: `unsupported tool content part type: ${contentPart.type}`,
+                              });
 
-                            return undefined;
+                              return undefined;
+                            }
                           }
-                        }
-                      })))
-                      .filter(isNonNullable);
+                        }),
+                      )
+                    ).filter(isNonNullable);
                     break;
                   case 'text':
                   case 'error-text':
