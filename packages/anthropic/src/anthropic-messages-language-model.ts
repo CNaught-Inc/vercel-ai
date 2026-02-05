@@ -684,7 +684,9 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV3 {
     return this.config.transformRequestBody?.(args) ?? args;
   }
 
-  private extractCitationDocuments(prompt: LanguageModelV3Prompt): Array<ExtractedCitationDocument> {
+  private extractCitationDocuments(
+    prompt: LanguageModelV3Prompt,
+  ): Array<ExtractedCitationDocument> {
     const isCitationPart = (part: {
       type: string;
       mediaType?: string;
@@ -725,7 +727,10 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV3 {
     const documentsFromToolResults = prompt
       .filter(message => message.role === 'tool')
       .flatMap(message => message.content)
-      .filter(toolResultOrApprovalContent => toolResultOrApprovalContent.type == 'tool-result')
+      .filter(
+        toolResultOrApprovalContent =>
+          toolResultOrApprovalContent.type == 'tool-result',
+      )
       .map(toolResultContent => toolResultContent.output)
       .filter(toolResultOutput => toolResultOutput.type === 'content')
       .flatMap(toolResultOutput => toolResultOutput.value)
@@ -739,7 +744,6 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV3 {
           mediaType: part.mediaType,
         };
       });
-
 
     return documentsFromUserContent.concat(documentsFromToolResults);
   }
