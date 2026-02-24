@@ -43,6 +43,11 @@ export interface AnthropicToolChangeContent {
   cache_control?: never;
 }
 
+export interface AnthropicContainerUploadContent {
+  type: 'container_upload';
+  file_id: string;
+}
+
 export interface AnthropicUserMessage {
   role: 'user';
   content: Array<
@@ -50,6 +55,7 @@ export interface AnthropicUserMessage {
     | AnthropicImageContent
     | AnthropicDocumentContent
     | AnthropicToolResultContent
+    | AnthropicContainerUploadContent
   >;
 }
 
