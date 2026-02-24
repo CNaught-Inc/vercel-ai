@@ -493,6 +493,25 @@ export async function convertToAnthropicMessagesPrompt({
               throw new Error(`Unsupported role: ${_exhaustiveCheck}`);
             }
           }
+
+          // Emit container_upload blocks from message providerOptions
+          // as siblings of the tool_result in the user message content
+          const containerUploads = (
+            message.providerOptions?.anthropic as
+              | {
+                  containerUploads?: Array<{ fileId: string }>;
+                }
+              | undefined
+          )?.containerUploads;
+          if (containerUploads) {
+            for (const upload of containerUploads) {
+              anthropicContent.push({
+                type: 'container_upload',
+                file_id: upload.fileId,
+              });
+            }
+            betas.add('files-api-2025-04-14');
+          }
         }
 
         messages.push({ role: 'user', content: anthropicContent });
