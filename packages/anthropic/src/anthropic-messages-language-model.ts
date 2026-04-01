@@ -66,6 +66,7 @@ type ExtractedCitationDocument = {
   title: string;
   filename?: string;
   mediaType: string;
+  context?: string;
 };
 
 function createCitationSource(
@@ -150,11 +151,13 @@ function createCitationSource(
               citedText: citation.cited_text,
               startPageNumber: citation.start_page_number,
               endPageNumber: citation.end_page_number,
+              ...(documentInfo.context && { context: documentInfo.context }),
             }
           : {
               citedText: citation.cited_text,
               startCharIndex: citation.start_char_index,
               endCharIndex: citation.end_char_index,
+              ...(documentInfo.context && { context: documentInfo.context }),
             },
     } satisfies SharedV3ProviderMetadata,
   };
@@ -945,10 +948,17 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV3 {
       .map(part => {
         // TypeScript knows this is a file part due to our filter
         const filePart = part as Extract<typeof part, { type: 'file' }>;
+        const anthropic = filePart.providerOptions?.anthropic as
+          | Record<string, unknown>
+          | undefined;
         return {
-          title: filePart.filename ?? 'Untitled Document',
+          title:
+            (anthropic?.title as string | undefined) ??
+            filePart.filename ??
+            'Untitled Document',
           filename: filePart.filename,
           mediaType: filePart.mediaType,
+          context: anthropic?.context as string | undefined,
         };
       });
 
@@ -966,10 +976,17 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV3 {
       .filter(isCitationPart)
       .map(part => {
         // TypeScript knows this is a file part due to our filter
+        const anthropic = part.providerOptions?.anthropic as
+          | Record<string, unknown>
+          | undefined;
         return {
-          title: part.filename ?? 'Untitled Document',
+          title:
+            (anthropic?.title as string | undefined) ??
+            part.filename ??
+            'Untitled Document',
           filename: part.filename,
           mediaType: part.mediaType,
+          context: anthropic?.context as string | undefined,
         };
       });
 
