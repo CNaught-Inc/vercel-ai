@@ -151,6 +151,30 @@ export async function convertToAnthropicMessagesPrompt({
     };
   }
 
+  async function getFileId(
+    providerMetadata: SharedV3ProviderMetadata | undefined,
+  ): Promise<string | undefined> {
+    const anthropicOptions = await parseProviderOptions({
+      provider: 'anthropic',
+      providerOptions: providerMetadata,
+      schema: anthropicFilePartProviderOptions,
+    });
+
+    return anthropicOptions?.fileId ?? undefined;
+  }
+
+  async function shouldUseContainerUpload(
+    providerMetadata: SharedV3ProviderMetadata | undefined,
+  ): Promise<boolean> {
+    const anthropicOptions = await parseProviderOptions({
+      provider: 'anthropic',
+      providerOptions: providerMetadata,
+      schema: anthropicFilePartProviderOptions,
+    });
+
+    return anthropicOptions?.asContainerUpload ?? false;
+  }
+
   for (let i = 0; i < blocks.length; i++) {
     const block = blocks[i];
     const isLastBlock = i === blocks.length - 1;
@@ -216,22 +240,48 @@ export async function convertToAnthropicMessagesPrompt({
                   }
 
                   case 'file': {
+                    // Anthropic Files API: when fileId is provided via providerOptions,
+                    // use { type: 'file', file_id } source to avoid re-processing files
+                    // on every turn in a multi-turn conversation.
+                    const fileId = await getFileId(part.providerOptions);
+                    if (fileId) {
+                      betas.add('files-api-2025-04-14');
+                    }
+
+                    // Container upload: make the file available on disk in the
+                    // code execution container (for skills like docx/xlsx).
+                    if (
+                      fileId &&
+                      (await shouldUseContainerUpload(part.providerOptions))
+                    ) {
+                      anthropicContent.push({
+                        type: 'container_upload',
+                        file_id: fileId,
+                      });
+                      break;
+                    }
+
                     if (part.mediaType.startsWith('image/')) {
                       anthropicContent.push({
                         type: 'image',
-                        source: isUrlData(part.data)
+                        source: fileId
                           ? {
-                              type: 'url',
-                              url: getUrlString(part.data),
+                              type: 'file',
+                              file_id: fileId,
                             }
-                          : {
-                              type: 'base64',
-                              media_type:
-                                part.mediaType === 'image/*'
-                                  ? 'image/jpeg'
-                                  : part.mediaType,
-                              data: convertToBase64(part.data),
-                            },
+                          : isUrlData(part.data)
+                            ? {
+                                type: 'url',
+                                url: getUrlString(part.data),
+                              }
+                            : {
+                                type: 'base64',
+                                media_type:
+                                  part.mediaType === 'image/*'
+                                    ? 'image/jpeg'
+                                    : part.mediaType,
+                                data: convertToBase64(part.data),
+                              },
                         cache_control: cacheControl,
                       });
                     } else if (part.mediaType === 'application/pdf') {
@@ -247,16 +297,21 @@ export async function convertToAnthropicMessagesPrompt({
 
                       anthropicContent.push({
                         type: 'document',
-                        source: isUrlData(part.data)
+                        source: fileId
                           ? {
-                              type: 'url',
-                              url: getUrlString(part.data),
+                              type: 'file',
+                              file_id: fileId,
                             }
-                          : {
-                              type: 'base64',
-                              media_type: 'application/pdf',
-                              data: convertToBase64(part.data),
-                            },
+                          : isUrlData(part.data)
+                            ? {
+                                type: 'url',
+                                url: getUrlString(part.data),
+                              }
+                            : {
+                                type: 'base64',
+                                media_type: 'application/pdf',
+                                data: convertToBase64(part.data),
+                              },
                         title: metadata.title ?? part.filename,
                         ...(metadata.context && { context: metadata.context }),
                         ...(enableCitations && {
@@ -275,16 +330,21 @@ export async function convertToAnthropicMessagesPrompt({
 
                       anthropicContent.push({
                         type: 'document',
-                        source: isUrlData(part.data)
+                        source: fileId
                           ? {
-                              type: 'url',
-                              url: getUrlString(part.data),
+                              type: 'file',
+                              file_id: fileId,
                             }
-                          : {
-                              type: 'text',
-                              media_type: 'text/plain',
-                              data: convertToString(part.data),
-                            },
+                          : isUrlData(part.data)
+                            ? {
+                                type: 'url',
+                                url: getUrlString(part.data),
+                              }
+                            : {
+                                type: 'text',
+                                media_type: 'text/plain',
+                                data: convertToString(part.data),
+                              },
                         title: metadata.title ?? part.filename,
                         ...(metadata.context && { context: metadata.context }),
                         ...(enableCitations && {
