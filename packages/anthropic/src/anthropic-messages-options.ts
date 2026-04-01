@@ -55,6 +55,21 @@ export const anthropicFilePartProviderOptions = z.object({
    * Useful for storing document metadata as text or stringified JSON.
    */
   context: z.string().optional(),
+
+  /**
+   * Anthropic Files API file ID. When provided, the file part will use
+   * a { type: 'file', file_id } source instead of base64/URL,
+   * avoiding re-processing on every turn in a multi-turn conversation.
+   */
+  fileId: z.string().optional(),
+
+  /**
+   * When true, emit this file part as a `container_upload` content block
+   * instead of a `document` block. This makes the file available on disk
+   * in the code execution container so that container skills (e.g. docx,
+   * xlsx) can process it. Requires a fileId from the Files API.
+   */
+  asContainerUpload: z.boolean().optional(),
 });
 
 export type AnthropicFilePartProviderOptions = z.infer<
