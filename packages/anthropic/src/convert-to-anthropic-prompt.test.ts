@@ -1331,6 +1331,303 @@ describe('tool messages', () => {
       }
     `);
   });
+
+  it('should enable citations for base64 PDF documents returned in tool results', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolName: 'rag-search',
+              toolCallId: 'rag-1',
+              output: {
+                type: 'content',
+                value: [
+                  {
+                    type: 'file',
+                    mediaType: 'application/pdf',
+                    data: { type: 'data', data: 'JVBERi0=' },
+                    filename: 'source.pdf',
+                    providerOptions: {
+                      anthropic: {
+                        citations: { enabled: true },
+                        title: 'Custom Title',
+                        context: 'doc-context',
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result).toMatchInlineSnapshot(`
+      {
+        "betas": Set {
+          "pdfs-2024-09-25",
+        },
+        "prompt": {
+          "messages": [
+            {
+              "content": [
+                {
+                  "cache_control": undefined,
+                  "content": [
+                    {
+                      "citations": {
+                        "enabled": true,
+                      },
+                      "context": "doc-context",
+                      "source": {
+                        "data": "JVBERi0=",
+                        "media_type": "application/pdf",
+                        "type": "base64",
+                      },
+                      "title": "Custom Title",
+                      "type": "document",
+                    },
+                  ],
+                  "is_error": undefined,
+                  "tool_use_id": "rag-1",
+                  "type": "tool_result",
+                },
+              ],
+              "role": "user",
+            },
+          ],
+          "system": undefined,
+        },
+      }
+    `);
+  });
+
+  it('should enable citations for base64 text/plain documents returned in tool results', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolName: 'rag-search',
+              toolCallId: 'rag-2',
+              output: {
+                type: 'content',
+                value: [
+                  {
+                    type: 'file',
+                    mediaType: 'text/plain',
+                    // base64 for "hello"
+                    data: { type: 'data', data: 'aGVsbG8=' },
+                    filename: 'source.txt',
+                    providerOptions: {
+                      anthropic: {
+                        citations: { enabled: true },
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result).toMatchInlineSnapshot(`
+      {
+        "betas": Set {},
+        "prompt": {
+          "messages": [
+            {
+              "content": [
+                {
+                  "cache_control": undefined,
+                  "content": [
+                    {
+                      "citations": {
+                        "enabled": true,
+                      },
+                      "source": {
+                        "data": "hello",
+                        "media_type": "text/plain",
+                        "type": "text",
+                      },
+                      "title": "source.txt",
+                      "type": "document",
+                    },
+                  ],
+                  "is_error": undefined,
+                  "tool_use_id": "rag-2",
+                  "type": "tool_result",
+                },
+              ],
+              "role": "user",
+            },
+          ],
+          "system": undefined,
+        },
+      }
+    `);
+  });
+
+  it('should enable citations for inline text documents returned in tool results', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolName: 'rag-search',
+              toolCallId: 'rag-3',
+              output: {
+                type: 'content',
+                value: [
+                  {
+                    type: 'file',
+                    mediaType: 'text/plain',
+                    data: { type: 'text', text: 'inline document text' },
+                    providerOptions: {
+                      anthropic: {
+                        citations: { enabled: true },
+                        title: 'Inline Doc',
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result).toMatchInlineSnapshot(`
+      {
+        "betas": Set {},
+        "prompt": {
+          "messages": [
+            {
+              "content": [
+                {
+                  "cache_control": undefined,
+                  "content": [
+                    {
+                      "citations": {
+                        "enabled": true,
+                      },
+                      "source": {
+                        "data": "inline document text",
+                        "media_type": "text/plain",
+                        "type": "text",
+                      },
+                      "title": "Inline Doc",
+                      "type": "document",
+                    },
+                  ],
+                  "is_error": undefined,
+                  "tool_use_id": "rag-3",
+                  "type": "tool_result",
+                },
+              ],
+              "role": "user",
+            },
+          ],
+          "system": undefined,
+        },
+      }
+    `);
+  });
+
+  it('should convert search-result custom tool output into search_result blocks', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolName: 'rag-search',
+              toolCallId: 'rag-4',
+              output: {
+                type: 'content',
+                value: [
+                  {
+                    type: 'custom',
+                    providerOptions: {
+                      anthropic: {
+                        type: 'search-result',
+                        source: 'doc-42',
+                        title: 'Result 42',
+                        content: [{ type: 'text', text: 'snippet' }],
+                        citations: { enabled: true },
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result).toMatchInlineSnapshot(`
+      {
+        "betas": Set {},
+        "prompt": {
+          "messages": [
+            {
+              "content": [
+                {
+                  "cache_control": undefined,
+                  "content": [
+                    {
+                      "citations": {
+                        "enabled": true,
+                      },
+                      "content": [
+                        {
+                          "text": "snippet",
+                          "type": "text",
+                        },
+                      ],
+                      "source": "doc-42",
+                      "title": "Result 42",
+                      "type": "search_result",
+                    },
+                  ],
+                  "is_error": undefined,
+                  "tool_use_id": "rag-4",
+                  "type": "tool_result",
+                },
+              ],
+              "role": "user",
+            },
+          ],
+          "system": undefined,
+        },
+      }
+    `);
+  });
 });
 
 describe('assistant messages', () => {

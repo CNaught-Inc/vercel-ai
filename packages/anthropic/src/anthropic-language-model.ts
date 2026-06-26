@@ -7,6 +7,7 @@ import {
   type LanguageModelV4FinishReason,
   type LanguageModelV4FunctionTool,
   type LanguageModelV4GenerateResult,
+  type LanguageModelV4Message,
   type LanguageModelV4Prompt,
   type LanguageModelV4Source,
   type LanguageModelV4StreamPart,
@@ -66,13 +67,16 @@ import { CacheControlValidator } from './get-cache-control';
 import { mapAnthropicStopReason } from './map-anthropic-stop-reason';
 import { sanitizeJsonSchema } from './sanitize-json-schema';
 
+type ExtractedCitationDocument = {
+  title: string;
+  filename?: string;
+  mediaType: string;
+  context?: string;
+};
+
 function createCitationSource(
   citation: Citation,
-  citationDocuments: Array<{
-    title: string;
-    filename?: string;
-    mediaType: string;
-  }>,
+  citationDocuments: Array<ExtractedCitationDocument>,
   generateId: () => string,
 ): LanguageModelV4Source | undefined {
   if (citation.type === 'web_search_result_location') {
@@ -89,6 +93,43 @@ function createCitationSource(
         },
       } satisfies SharedV4ProviderMetadata,
     };
+  }
+
+  // Handle search result citations (from RAG tool results or third-party web search)
+  if (citation.type === 'search_result_location') {
+    // Check if source is a URL (starts with http:// or https://)
+    const isUrl = /^https?:\/\//i.test(citation.source);
+
+    if (isUrl) {
+      // Treat like web_search_result_location for URL sources
+      return {
+        type: 'source' as const,
+        sourceType: 'url' as const,
+        id: generateId(),
+        url: citation.source,
+        title: citation.title ?? undefined,
+        providerMetadata: {
+          anthropic: {
+            citedText: citation.cited_text,
+          },
+        } satisfies SharedV4ProviderMetadata,
+      };
+    } else {
+      // Treat as document for non-URL sources (e.g., documentId)
+      return {
+        type: 'source' as const,
+        sourceType: 'document' as const,
+        id: generateId(),
+        mediaType: 'text/plain',
+        title: citation.title ?? 'Search Result',
+        providerMetadata: {
+          anthropic: {
+            citedText: citation.cited_text,
+            context: citation.source, // documentId for UI compatibility
+          },
+        } satisfies SharedV4ProviderMetadata,
+      };
+    }
   }
 
   if (citation.type !== 'page_location' && citation.type !== 'char_location') {
@@ -115,11 +156,13 @@ function createCitationSource(
               citedText: citation.cited_text,
               startPageNumber: citation.start_page_number,
               endPageNumber: citation.end_page_number,
+              ...(documentInfo.context && { context: documentInfo.context }),
             }
           : {
               citedText: citation.cited_text,
               startCharIndex: citation.start_char_index,
               endCharIndex: citation.end_char_index,
+              ...(documentInfo.context && { context: documentInfo.context }),
             },
     } satisfies SharedV4ProviderMetadata,
   };
@@ -827,11 +870,9 @@ export class AnthropicLanguageModel implements LanguageModelV4 {
     return this.config.transformRequestBody?.(args, betas) ?? args;
   }
 
-  private extractCitationDocuments(prompt: LanguageModelV4Prompt): Array<{
-    title: string;
-    filename?: string;
-    mediaType: string;
-  }> {
+  private extractCitationDocuments(
+    prompt: LanguageModelV4Prompt,
+  ): Array<ExtractedCitationDocument> {
     const isCitationPart = (part: {
       type: string;
       mediaType?: string;
@@ -855,19 +896,52 @@ export class AnthropicLanguageModel implements LanguageModelV4 {
       return citationsConfig?.enabled ?? false;
     };
 
-    return prompt
+    const toDocument = (part: {
+      filename?: string;
+      mediaType: string;
+      providerOptions?: SharedV4ProviderMetadata;
+    }): ExtractedCitationDocument => {
+      const anthropic = part.providerOptions?.anthropic as
+        | Record<string, unknown>
+        | undefined;
+      return {
+        title:
+          (anthropic?.title as string | undefined) ??
+          part.filename ??
+          'Untitled Document',
+        filename: part.filename,
+        mediaType: part.mediaType,
+        context: anthropic?.context as string | undefined,
+      };
+    };
+
+    const documentsFromUserContent = prompt
       .filter(message => message.role === 'user')
       .flatMap(message => message.content)
       .filter(isCitationPart)
-      .map(part => {
+      .map(part =>
         // TypeScript knows this is a file part due to our filter
-        const filePart = part as Extract<typeof part, { type: 'file' }>;
-        return {
-          title: filePart.filename ?? 'Untitled Document',
-          filename: filePart.filename,
-          mediaType: filePart.mediaType,
-        };
-      });
+        toDocument(part as Extract<typeof part, { type: 'file' }>),
+      );
+
+    // RAG / third-party search documents may also be returned as `file` parts
+    // inside tool results. These contribute to the same `document_index` space
+    // as user-content documents, so they must be appended in order.
+    const documentsFromToolResults = prompt
+      .filter(
+        (message): message is LanguageModelV4Message & { role: 'tool' } =>
+          message.role === 'tool',
+      )
+      .flatMap(message => message.content)
+      .flatMap(content =>
+        content.type === 'tool-result' && content.output.type === 'content'
+          ? content.output.value
+          : [],
+      )
+      .filter(isCitationPart)
+      .map(part => toDocument(part as Extract<typeof part, { type: 'file' }>));
+
+    return documentsFromUserContent.concat(documentsFromToolResults);
   }
 
   async doGenerate(

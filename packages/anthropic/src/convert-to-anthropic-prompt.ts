@@ -399,113 +399,218 @@ export async function convertToAnthropicPrompt({
                 let contentValue: AnthropicToolResultContent['content'];
                 switch (output.type) {
                   case 'content':
-                    contentValue = output.value
-                      .map(contentPart => {
-                        switch (contentPart.type) {
-                          case 'text':
-                            return {
-                              type: 'text' as const,
-                              text: contentPart.text,
-                            };
-                          case 'file': {
-                            const topLevel = getTopLevelMediaType(
-                              contentPart.mediaType,
-                            );
+                    contentValue = (
+                      await Promise.all(
+                        output.value.map(async contentPart => {
+                          switch (contentPart.type) {
+                            case 'text':
+                              return {
+                                type: 'text' as const,
+                                text: contentPart.text,
+                              };
+                            case 'file': {
+                              const topLevel = getTopLevelMediaType(
+                                contentPart.mediaType,
+                              );
 
-                            if (contentPart.data.type === 'url') {
-                              if (topLevel === 'image') {
+                              if (contentPart.data.type === 'url') {
+                                if (topLevel === 'image') {
+                                  return {
+                                    type: 'image' as const,
+                                    source: {
+                                      type: 'url' as const,
+                                      url: contentPart.data.url.toString(),
+                                    },
+                                  };
+                                }
                                 return {
-                                  type: 'image' as const,
+                                  type: 'document' as const,
                                   source: {
                                     type: 'url' as const,
                                     url: contentPart.data.url.toString(),
                                   },
                                 };
                               }
-                              return {
-                                type: 'document' as const,
-                                source: {
-                                  type: 'url' as const,
-                                  url: contentPart.data.url.toString(),
-                                },
-                              };
-                            }
 
-                            if (contentPart.data.type === 'data') {
-                              if (topLevel === 'image') {
-                                return {
-                                  type: 'image' as const,
-                                  source: {
-                                    type: 'base64' as const,
-                                    media_type: resolveFullMediaType({
-                                      part: contentPart,
+                              if (contentPart.data.type === 'data') {
+                                if (topLevel === 'image') {
+                                  return {
+                                    type: 'image' as const,
+                                    source: {
+                                      type: 'base64' as const,
+                                      media_type: resolveFullMediaType({
+                                        part: contentPart,
+                                      }),
+                                      data: convertToBase64(
+                                        contentPart.data.data,
+                                      ),
+                                    },
+                                  };
+                                }
+                                if (
+                                  resolveFullMediaType({
+                                    part: contentPart,
+                                  }) === 'application/pdf'
+                                ) {
+                                  betas.add('pdfs-2024-09-25');
+
+                                  const enableCitations =
+                                    await shouldEnableCitations(
+                                      contentPart.providerOptions,
+                                    );
+                                  const metadata = await getDocumentMetadata(
+                                    contentPart.providerOptions,
+                                  );
+
+                                  return {
+                                    type: 'document' as const,
+                                    source: {
+                                      type: 'base64' as const,
+                                      media_type: 'application/pdf',
+                                      data: convertToBase64(
+                                        contentPart.data.data,
+                                      ),
+                                    },
+                                    ...(enableCitations && {
+                                      title:
+                                        metadata.title ??
+                                        contentPart.filename ??
+                                        'Untitled Document',
+                                      ...(metadata.context && {
+                                        context: metadata.context,
+                                      }),
+                                      citations: { enabled: true },
                                     }),
-                                    data: convertToBase64(
-                                      contentPart.data.data,
-                                    ),
-                                  },
-                                };
+                                  };
+                                }
+                                if (contentPart.mediaType === 'text/plain') {
+                                  const enableCitations =
+                                    await shouldEnableCitations(
+                                      contentPart.providerOptions,
+                                    );
+                                  const metadata = await getDocumentMetadata(
+                                    contentPart.providerOptions,
+                                  );
+
+                                  return {
+                                    type: 'document' as const,
+                                    source: {
+                                      type: 'text' as const,
+                                      media_type: 'text/plain' as const,
+                                      data: convertBytesDataToString(
+                                        contentPart.data.data,
+                                      ),
+                                    },
+                                    ...(enableCitations && {
+                                      title:
+                                        metadata.title ??
+                                        contentPart.filename ??
+                                        'Untitled Document',
+                                      ...(metadata.context && {
+                                        context: metadata.context,
+                                      }),
+                                      citations: { enabled: true },
+                                    }),
+                                  };
+                                }
+
+                                warnings.push({
+                                  type: 'other',
+                                  message: `unsupported tool content part type: ${contentPart.type} with media type: ${contentPart.mediaType}`,
+                                });
+
+                                return undefined;
                               }
+
                               if (
-                                resolveFullMediaType({ part: contentPart }) ===
-                                'application/pdf'
+                                contentPart.data.type === 'text' &&
+                                contentPart.mediaType === 'text/plain'
                               ) {
-                                betas.add('pdfs-2024-09-25');
+                                const enableCitations =
+                                  await shouldEnableCitations(
+                                    contentPart.providerOptions,
+                                  );
+                                const metadata = await getDocumentMetadata(
+                                  contentPart.providerOptions,
+                                );
+
                                 return {
                                   type: 'document' as const,
                                   source: {
-                                    type: 'base64' as const,
-                                    media_type: 'application/pdf',
-                                    data: convertToBase64(
-                                      contentPart.data.data,
-                                    ),
+                                    type: 'text' as const,
+                                    media_type: 'text/plain' as const,
+                                    data: contentPart.data.text,
                                   },
+                                  ...(enableCitations && {
+                                    title:
+                                      metadata.title ??
+                                      contentPart.filename ??
+                                      'Untitled Document',
+                                    ...(metadata.context && {
+                                      context: metadata.context,
+                                    }),
+                                    citations: { enabled: true },
+                                  }),
                                 };
                               }
 
                               warnings.push({
                                 type: 'other',
-                                message: `unsupported tool content part type: ${contentPart.type} with media type: ${contentPart.mediaType}`,
+                                message: `unsupported tool content part type: ${contentPart.type} with data type: ${contentPart.data.type}`,
                               });
 
                               return undefined;
                             }
-
-                            warnings.push({
-                              type: 'other',
-                              message: `unsupported tool content part type: ${contentPart.type} with data type: ${contentPart.data.type}`,
-                            });
-
-                            return undefined;
-                          }
-                          case 'custom': {
-                            const anthropicOptions = contentPart.providerOptions
-                              ?.anthropic as
-                              | { type: string; toolName?: string }
-                              | undefined;
-                            if (anthropicOptions?.type === 'tool-reference') {
-                              return {
-                                type: 'tool_reference' as const,
-                                tool_name: anthropicOptions.toolName!,
-                              };
+                            case 'custom': {
+                              const anthropicOptions = contentPart
+                                .providerOptions?.anthropic as
+                                | { type: 'tool-reference'; toolName?: string }
+                                | {
+                                    type: 'search-result';
+                                    source?: string;
+                                    title?: string;
+                                    content?: Array<{
+                                      type: 'text';
+                                      text: string;
+                                    }>;
+                                    citations?: { enabled: boolean };
+                                  }
+                                | undefined;
+                              if (anthropicOptions?.type === 'tool-reference') {
+                                return {
+                                  type: 'tool_reference' as const,
+                                  tool_name: anthropicOptions.toolName!,
+                                };
+                              }
+                              if (anthropicOptions?.type === 'search-result') {
+                                return {
+                                  type: 'search_result' as const,
+                                  source: anthropicOptions.source ?? '',
+                                  title: anthropicOptions.title ?? '',
+                                  content: anthropicOptions.content ?? [],
+                                  ...(anthropicOptions.citations && {
+                                    citations: anthropicOptions.citations,
+                                  }),
+                                };
+                              }
+                              warnings.push({
+                                type: 'other',
+                                message: `unsupported custom tool content part`,
+                              });
+                              return undefined;
                             }
-                            warnings.push({
-                              type: 'other',
-                              message: `unsupported custom tool content part`,
-                            });
-                            return undefined;
-                          }
-                          default: {
-                            warnings.push({
-                              type: 'other',
-                              message: `unsupported tool content part type: ${(contentPart as { type: string }).type}`,
-                            });
+                            default: {
+                              warnings.push({
+                                type: 'other',
+                                message: `unsupported tool content part type: ${(contentPart as { type: string }).type}`,
+                              });
 
-                            return undefined;
+                              return undefined;
+                            }
                           }
-                        }
-                      })
-                      .filter(isNonNullable);
+                        }),
+                      )
+                    ).filter(isNonNullable);
                     break;
                   case 'text':
                   case 'error-text':

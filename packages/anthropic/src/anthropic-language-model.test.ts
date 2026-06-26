@@ -2615,6 +2615,179 @@ describe('AnthropicLanguageModel', () => {
       `);
     });
 
+    it('should process search_result_location citations for documents and urls', async () => {
+      const mockProvider = createAnthropic({
+        apiKey: 'test-api-key',
+        generateId: mockId({ prefix: 'search' }),
+      });
+      const modelWithMockId = mockProvider('claude-3-haiku-20240307');
+
+      server.urls['https://api.anthropic.com/v1/messages'].response = {
+        type: 'json-value',
+        body: {
+          id: 'msg_search_result',
+          type: 'message',
+          role: 'assistant',
+          content: [
+            {
+              type: 'text',
+              text: 'Answer grounded in search results.',
+              citations: [
+                {
+                  type: 'search_result_location',
+                  cited_text: 'from a RAG document',
+                  source: 'doc-123',
+                  title: 'RAG Document',
+                  search_result_index: 0,
+                  start_block_index: 0,
+                  end_block_index: 1,
+                },
+                {
+                  type: 'search_result_location',
+                  cited_text: 'from the web',
+                  source: 'https://example.com/article',
+                  title: 'Web Article',
+                  search_result_index: 1,
+                  start_block_index: 0,
+                  end_block_index: 1,
+                },
+              ],
+            },
+          ],
+          model: 'claude-3-haiku-20240307',
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 4, output_tokens: 30 },
+        },
+      };
+
+      const result = await modelWithMockId.doGenerate({
+        prompt: [
+          { role: 'user', content: [{ type: 'text', text: 'Question?' }] },
+        ],
+      });
+
+      expect(result.content).toMatchInlineSnapshot(`
+        [
+          {
+            "text": "Answer grounded in search results.",
+            "type": "text",
+          },
+          {
+            "id": "search-0",
+            "mediaType": "text/plain",
+            "providerMetadata": {
+              "anthropic": {
+                "citedText": "from a RAG document",
+                "context": "doc-123",
+              },
+            },
+            "sourceType": "document",
+            "title": "RAG Document",
+            "type": "source",
+          },
+          {
+            "id": "search-1",
+            "providerMetadata": {
+              "anthropic": {
+                "citedText": "from the web",
+              },
+            },
+            "sourceType": "url",
+            "title": "Web Article",
+            "type": "source",
+            "url": "https://example.com/article",
+          },
+        ]
+      `);
+    });
+
+    it('should pass document context through to page_location citations', async () => {
+      const mockProvider = createAnthropic({
+        apiKey: 'test-api-key',
+        generateId: () => 'ctx-citation-id',
+      });
+      const modelWithMockId = mockProvider('claude-3-haiku-20240307');
+
+      server.urls['https://api.anthropic.com/v1/messages'].response = {
+        type: 'json-value',
+        body: {
+          id: 'msg_context_passthrough',
+          type: 'message',
+          role: 'assistant',
+          content: [
+            {
+              type: 'text',
+              text: 'Grounded answer.',
+              citations: [
+                {
+                  type: 'page_location',
+                  cited_text: 'a cited passage',
+                  document_index: 0,
+                  document_title: null,
+                  start_page_number: 1,
+                  end_page_number: 2,
+                },
+              ],
+            },
+          ],
+          model: 'claude-3-haiku-20240307',
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 4, output_tokens: 30 },
+        },
+      };
+
+      const result = await modelWithMockId.doGenerate({
+        prompt: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'file',
+                data: { type: 'data' as const, data: 'base64PDFdata' },
+                mediaType: 'application/pdf',
+                filename: 'report.pdf',
+                providerOptions: {
+                  anthropic: {
+                    citations: { enabled: true },
+                    title: 'Annual Report',
+                    context: 'fiscal-year-2023',
+                  },
+                },
+              },
+              { type: 'text', text: 'What does it say?' },
+            ],
+          },
+        ],
+      });
+
+      expect(result.content).toMatchInlineSnapshot(`
+        [
+          {
+            "text": "Grounded answer.",
+            "type": "text",
+          },
+          {
+            "filename": "report.pdf",
+            "id": "ctx-citation-id",
+            "mediaType": "application/pdf",
+            "providerMetadata": {
+              "anthropic": {
+                "citedText": "a cited passage",
+                "context": "fiscal-year-2023",
+                "endPageNumber": 2,
+                "startPageNumber": 1,
+              },
+            },
+            "sourceType": "document",
+            "title": "Annual Report",
+            "type": "source",
+          },
+        ]
+      `);
+    });
+
     describe('function tool', () => {
       it('should extract tool calls', async () => {
         server.urls['https://api.anthropic.com/v1/messages'].response = {
