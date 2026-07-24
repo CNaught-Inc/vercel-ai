@@ -94,6 +94,40 @@ function createCitationSource(
     };
   }
 
+  // Search result citations come from RAG tool results or third-party search
+  // tools. Their `source` is either a URL or an opaque identifier.
+  if (citation.type === 'search_result_location') {
+    const isUrl = /^https?:\/\//i.test(citation.source);
+
+    return isUrl
+      ? {
+          type: 'source' as const,
+          sourceType: 'url' as const,
+          id: generateId(),
+          url: citation.source,
+          title: citation.title ?? undefined,
+          providerMetadata: {
+            anthropic: {
+              citedText: citation.cited_text,
+            },
+          } satisfies SharedV4ProviderMetadata,
+        }
+      : {
+          type: 'source' as const,
+          sourceType: 'document' as const,
+          id: generateId(),
+          mediaType: 'text/plain',
+          title: citation.title ?? 'Search Result',
+          providerMetadata: {
+            anthropic: {
+              citedText: citation.cited_text,
+              // the identifier of the cited search result
+              context: citation.source,
+            },
+          } satisfies SharedV4ProviderMetadata,
+        };
+  }
+
   if (citation.type !== 'page_location' && citation.type !== 'char_location') {
     return;
   }

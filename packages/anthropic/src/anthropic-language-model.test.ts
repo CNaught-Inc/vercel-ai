@@ -2836,6 +2836,91 @@ describe('AnthropicLanguageModel', () => {
       `);
     });
 
+    it('should process search result citation responses', async () => {
+      const mockProvider = createAnthropic({
+        apiKey: 'test-api-key',
+        generateId: () => 'test-search-result-citation-id',
+      });
+      const modelWithMockId = mockProvider('claude-3-haiku-20240307');
+
+      server.urls['https://api.anthropic.com/v1/messages'].response = {
+        type: 'json-value',
+        body: {
+          id: 'msg_017TfcQ4AgGxKyBduUpqYPZn',
+          type: 'message',
+          role: 'assistant',
+          content: [
+            {
+              type: 'text',
+              text: 'Refunds are available within 30 days, and orders ship in 2 days.',
+              citations: [
+                {
+                  type: 'search_result_location',
+                  cited_text: 'Refunds within 30 days.',
+                  source: 'doc-123',
+                  title: 'Refund policy',
+                  search_result_index: 0,
+                  start_block_index: 0,
+                  end_block_index: 1,
+                },
+                {
+                  type: 'search_result_location',
+                  cited_text: 'Ships in 2 days.',
+                  source: 'https://example.com/shipping',
+                  title: 'Shipping policy',
+                  search_result_index: 1,
+                  start_block_index: 0,
+                  end_block_index: 1,
+                },
+              ],
+            },
+          ],
+          model: 'claude-3-haiku-20240307',
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 4, output_tokens: 30 },
+        },
+      };
+
+      const result = await modelWithMockId.doGenerate({
+        prompt: TEST_PROMPT,
+      });
+
+      expect(result.content).toMatchInlineSnapshot(`
+        [
+          {
+            "text": "Refunds are available within 30 days, and orders ship in 2 days.",
+            "type": "text",
+          },
+          {
+            "id": "test-search-result-citation-id",
+            "mediaType": "text/plain",
+            "providerMetadata": {
+              "anthropic": {
+                "citedText": "Refunds within 30 days.",
+                "context": "doc-123",
+              },
+            },
+            "sourceType": "document",
+            "title": "Refund policy",
+            "type": "source",
+          },
+          {
+            "id": "test-search-result-citation-id",
+            "providerMetadata": {
+              "anthropic": {
+                "citedText": "Ships in 2 days.",
+              },
+            },
+            "sourceType": "url",
+            "title": "Shipping policy",
+            "type": "source",
+            "url": "https://example.com/shipping",
+          },
+        ]
+      `);
+    });
+
     it('should process citation responses for documents in tool results', async () => {
       const mockProvider = createAnthropic({
         apiKey: 'test-api-key',
@@ -9151,6 +9236,52 @@ describe('AnthropicLanguageModel', () => {
             },
           ]
         `);
+      });
+
+      it('should process search result citation responses in streaming', async () => {
+        const mockProvider = createAnthropic({
+          apiKey: 'test-api-key',
+          generateId: mockId(),
+        });
+        const modelWithMockId = mockProvider('claude-3-haiku-20240307');
+
+        server.urls['https://api.anthropic.com/v1/messages'].response = {
+          type: 'stream-chunks',
+          chunks: [
+            `data: {"type":"message_start","message":{"id":"msg_01KfpJoAEabmH2iHRRFjQMAG","type":"message","role":"assistant","content":[],"model":"claude-3-haiku-20240307","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":17,"output_tokens":1}}}\n\n`,
+            `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n`,
+            `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Refunds within 30 days."}}\n\n`,
+            `data: {"type":"content_block_stop","index":0}\n\n`,
+            `data: {"type":"content_block_delta","index":0,"delta":{"type":"citations_delta","citation":{"type":"search_result_location","cited_text":"Refunds within 30 days.","source":"doc-123","title":"Refund policy","search_result_index":0,"start_block_index":0,"end_block_index":1}}}\n\n`,
+            `data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":227}}\n\n`,
+            `data: {"type":"message_stop"}\n\n`,
+          ],
+        };
+
+        const { stream } = await modelWithMockId.doStream({
+          prompt: TEST_PROMPT,
+        });
+
+        const result = await convertReadableStreamToArray(stream);
+
+        expect(result.filter(part => part.type === 'source'))
+          .toMatchInlineSnapshot(`
+            [
+              {
+                "id": "id-0",
+                "mediaType": "text/plain",
+                "providerMetadata": {
+                  "anthropic": {
+                    "citedText": "Refunds within 30 days.",
+                    "context": "doc-123",
+                  },
+                },
+                "sourceType": "document",
+                "title": "Refund policy",
+                "type": "source",
+              },
+            ]
+          `);
       });
     });
 

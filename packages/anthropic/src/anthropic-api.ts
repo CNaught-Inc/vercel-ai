@@ -220,6 +220,23 @@ export interface AnthropicToolReferenceContent {
   tool_name: string;
 }
 
+/**
+ * Search result content block, used to return RAG or third-party search
+ * results from a tool. Nested inside `tool_result`, so it cannot be cached
+ * directly.
+ */
+type AnthropicNestedSearchResultContent = {
+  type: 'search_result';
+  /**
+   * URL or unique identifier (e.g. a document id) of the search result.
+   */
+  source: string;
+  title: string;
+  content: Array<{ type: 'text'; text: string }>;
+  citations?: { enabled: boolean };
+  cache_control?: never;
+};
+
 export interface AnthropicToolResultContent {
   type: 'tool_result';
   tool_use_id: string;
@@ -229,6 +246,7 @@ export interface AnthropicToolResultContent {
         | AnthropicNestedTextContent
         | AnthropicNestedImageContent
         | AnthropicNestedDocumentContent
+        | AnthropicNestedSearchResultContent
         | AnthropicToolReferenceContent
       >;
   is_error: boolean | undefined;
@@ -657,6 +675,15 @@ export const anthropicResponseSchema = lazySchema(() =>
                     url: z.string(),
                     title: z.string(),
                     encrypted_index: z.string(),
+                  }),
+                  z.object({
+                    type: z.literal('search_result_location'),
+                    cited_text: z.string(),
+                    source: z.string(),
+                    title: z.string().nullable(),
+                    search_result_index: z.number(),
+                    start_block_index: z.number(),
+                    end_block_index: z.number(),
                   }),
                   z.object({
                     type: z.literal('page_location'),
@@ -1372,6 +1399,15 @@ export const anthropicChunkSchema = lazySchema(() =>
                 url: z.string(),
                 title: z.string(),
                 encrypted_index: z.string(),
+              }),
+              z.object({
+                type: z.literal('search_result_location'),
+                cited_text: z.string(),
+                source: z.string(),
+                title: z.string().nullable(),
+                search_result_index: z.number(),
+                start_block_index: z.number(),
+                end_block_index: z.number(),
               }),
               z.object({
                 type: z.literal('page_location'),

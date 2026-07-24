@@ -1534,6 +1534,105 @@ describe('tool messages', () => {
     `);
   });
 
+  it('should handle tool result with custom search-result content', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolName: 'knowledgeBaseSearch',
+              toolCallId: 'kb-search-1',
+              output: {
+                type: 'content',
+                value: [
+                  {
+                    type: 'custom',
+                    providerOptions: {
+                      anthropic: {
+                        type: 'search-result',
+                        source: 'doc-123',
+                        title: 'Refund policy',
+                        content: [
+                          { type: 'text', text: 'Refunds within 30 days.' },
+                        ],
+                        citations: { enabled: true },
+                      },
+                    },
+                  },
+                  {
+                    type: 'custom',
+                    providerOptions: {
+                      anthropic: {
+                        type: 'search-result',
+                        source: 'https://example.com/shipping',
+                        title: 'Shipping policy',
+                        content: [{ type: 'text', text: 'Ships in 2 days.' }],
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result).toMatchInlineSnapshot(`
+      {
+        "betas": Set {},
+        "prompt": {
+          "messages": [
+            {
+              "content": [
+                {
+                  "cache_control": undefined,
+                  "content": [
+                    {
+                      "citations": {
+                        "enabled": true,
+                      },
+                      "content": [
+                        {
+                          "text": "Refunds within 30 days.",
+                          "type": "text",
+                        },
+                      ],
+                      "source": "doc-123",
+                      "title": "Refund policy",
+                      "type": "search_result",
+                    },
+                    {
+                      "content": [
+                        {
+                          "text": "Ships in 2 days.",
+                          "type": "text",
+                        },
+                      ],
+                      "source": "https://example.com/shipping",
+                      "title": "Shipping policy",
+                      "type": "search_result",
+                    },
+                  ],
+                  "is_error": undefined,
+                  "tool_use_id": "kb-search-1",
+                  "type": "tool_result",
+                },
+              ],
+              "role": "user",
+            },
+          ],
+          "system": undefined,
+        },
+      }
+    `);
+  });
+
   it('should handle tool result with url-based PDF content', async () => {
     const result = await convertToAnthropicPrompt({
       prompt: [
