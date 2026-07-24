@@ -13,6 +13,7 @@ import {
   type LanguageModelV4StreamResult,
   type LanguageModelV4ToolCall,
   type SharedV4ProviderMetadata,
+  type SharedV4ProviderOptions,
   type SharedV4Warning,
 } from '@ai-sdk/provider';
 import {
@@ -71,6 +72,7 @@ type ExtractedCitationDocument = {
   title: string;
   filename?: string;
   mediaType: string;
+  context?: string;
 };
 
 function createCitationSource(
@@ -146,8 +148,8 @@ function createCitationSource(
     title: citation.document_title ?? documentInfo.title,
     filename: documentInfo.filename,
     providerMetadata: {
-      anthropic:
-        citation.type === 'page_location'
+      anthropic: {
+        ...(citation.type === 'page_location'
           ? {
               citedText: citation.cited_text,
               startPageNumber: citation.start_page_number,
@@ -157,7 +159,11 @@ function createCitationSource(
               citedText: citation.cited_text,
               startCharIndex: citation.start_char_index,
               endCharIndex: citation.end_char_index,
-            },
+            }),
+        // pass the document context through so that consumers can correlate
+        // the source with the document it was cited from
+        ...(documentInfo.context && { context: documentInfo.context }),
+      },
     } satisfies SharedV4ProviderMetadata,
   };
 }
@@ -947,11 +953,19 @@ export class AnthropicLanguageModel implements LanguageModelV4 {
     const toCitationDocument = (part: {
       filename?: string;
       mediaType: string;
-    }): ExtractedCitationDocument => ({
-      title: part.filename ?? 'Untitled Document',
-      filename: part.filename,
-      mediaType: part.mediaType,
-    });
+      providerOptions?: SharedV4ProviderOptions;
+    }): ExtractedCitationDocument => {
+      const anthropic = part.providerOptions?.anthropic;
+      return {
+        title:
+          (anthropic?.title as string | undefined) ??
+          part.filename ??
+          'Untitled Document',
+        filename: part.filename,
+        mediaType: part.mediaType,
+        context: anthropic?.context as string | undefined,
+      };
+    };
 
     const documentsFromUserContent = prompt
       .filter(message => message.role === 'user')

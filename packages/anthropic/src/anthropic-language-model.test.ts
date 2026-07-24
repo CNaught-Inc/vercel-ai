@@ -2836,6 +2836,92 @@ describe('AnthropicLanguageModel', () => {
       `);
     });
 
+    it('should use the document title and context from provider options for citation sources', async () => {
+      const mockProvider = createAnthropic({
+        apiKey: 'test-api-key',
+        generateId: () => 'test-document-context-id',
+      });
+      const modelWithMockId = mockProvider('claude-3-haiku-20240307');
+
+      server.urls['https://api.anthropic.com/v1/messages'].response = {
+        type: 'json-value',
+        body: {
+          id: 'msg_017TfcQ4AgGxKyBduUpqYPZn',
+          type: 'message',
+          role: 'assistant',
+          content: [
+            {
+              type: 'text',
+              text: 'The text shows important information.',
+              citations: [
+                {
+                  type: 'char_location',
+                  cited_text: 'important information',
+                  document_index: 0,
+                  document_title: null,
+                  start_char_index: 15,
+                  end_char_index: 35,
+                },
+              ],
+            },
+          ],
+          model: 'claude-3-haiku-20240307',
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 4, output_tokens: 30 },
+        },
+      };
+
+      const result = await modelWithMockId.doGenerate({
+        prompt: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'file',
+                data: { type: 'text' as const, text: 'Test document content' },
+                mediaType: 'text/plain',
+                filename: 'test.txt',
+                providerOptions: {
+                  anthropic: {
+                    citations: { enabled: true },
+                    title: 'Knowledge base article',
+                    context: 'kb-article-42',
+                  },
+                },
+              },
+              { type: 'text', text: 'What does this say?' },
+            ],
+          },
+        ],
+      });
+
+      expect(result.content).toMatchInlineSnapshot(`
+        [
+          {
+            "text": "The text shows important information.",
+            "type": "text",
+          },
+          {
+            "filename": "test.txt",
+            "id": "test-document-context-id",
+            "mediaType": "text/plain",
+            "providerMetadata": {
+              "anthropic": {
+                "citedText": "important information",
+                "context": "kb-article-42",
+                "endCharIndex": 35,
+                "startCharIndex": 15,
+              },
+            },
+            "sourceType": "document",
+            "title": "Knowledge base article",
+            "type": "source",
+          },
+        ]
+      `);
+    });
+
     it('should process search result citation responses', async () => {
       const mockProvider = createAnthropic({
         apiKey: 'test-api-key',
