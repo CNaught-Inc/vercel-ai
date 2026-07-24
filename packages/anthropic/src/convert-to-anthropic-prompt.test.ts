@@ -1697,6 +1697,82 @@ describe('tool messages', () => {
     `);
   });
 
+  it('should enable citations for url-based PDF tool result content', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolName: 'get-pdf',
+              toolCallId: 'get-pdf-1',
+              output: {
+                type: 'content',
+                value: [
+                  {
+                    type: 'file',
+                    data: {
+                      type: 'url',
+                      url: new URL('https://example.com/document.pdf'),
+                    },
+                    mediaType: 'application/pdf',
+                    providerOptions: {
+                      anthropic: {
+                        citations: { enabled: true },
+                        title: 'Annual report',
+                        context: 'doc-456',
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result).toMatchInlineSnapshot(`
+      {
+        "betas": Set {},
+        "prompt": {
+          "messages": [
+            {
+              "content": [
+                {
+                  "cache_control": undefined,
+                  "content": [
+                    {
+                      "citations": {
+                        "enabled": true,
+                      },
+                      "context": "doc-456",
+                      "source": {
+                        "type": "url",
+                        "url": "https://example.com/document.pdf",
+                      },
+                      "title": "Annual report",
+                      "type": "document",
+                    },
+                  ],
+                  "is_error": undefined,
+                  "tool_use_id": "get-pdf-1",
+                  "type": "tool_result",
+                },
+              ],
+              "role": "user",
+            },
+          ],
+          "system": undefined,
+        },
+      }
+    `);
+  });
+
   it('should handle tool result with url-based image content', async () => {
     const result = await convertToAnthropicPrompt({
       prompt: [

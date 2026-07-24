@@ -512,6 +512,9 @@ export async function convertToAnthropicPrompt({
                                     type: 'url' as const,
                                     url: contentPart.data.url.toString(),
                                   },
+                                  ...(await getDocumentCitationOptions(
+                                    contentPart,
+                                  )),
                                 };
                               }
 
