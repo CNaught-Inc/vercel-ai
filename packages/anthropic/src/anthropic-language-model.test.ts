@@ -2836,6 +2836,111 @@ describe('AnthropicLanguageModel', () => {
       `);
     });
 
+    it('should process citation responses for documents in tool results', async () => {
+      const mockProvider = createAnthropic({
+        apiKey: 'test-api-key',
+        generateId: () => 'test-tool-result-citation-id',
+      });
+      const modelWithMockId = mockProvider('claude-3-haiku-20240307');
+
+      server.urls['https://api.anthropic.com/v1/messages'].response = {
+        type: 'json-value',
+        body: {
+          id: 'msg_017TfcQ4AgGxKyBduUpqYPZn',
+          type: 'message',
+          role: 'assistant',
+          content: [
+            {
+              type: 'text',
+              text: 'The retrieved document mentions the policy.',
+              citations: [
+                {
+                  type: 'char_location',
+                  cited_text: 'the policy',
+                  document_index: 0,
+                  document_title: null,
+                  start_char_index: 4,
+                  end_char_index: 14,
+                },
+              ],
+            },
+          ],
+          model: 'claude-3-haiku-20240307',
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 4, output_tokens: 30 },
+        },
+      };
+
+      const result = await modelWithMockId.doGenerate({
+        prompt: [
+          {
+            role: 'user',
+            content: [{ type: 'text', text: 'What is the policy?' }],
+          },
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool-call',
+                toolCallId: 'call-1',
+                toolName: 'search',
+                input: { query: 'policy' },
+              },
+            ],
+          },
+          {
+            role: 'tool',
+            content: [
+              {
+                type: 'tool-result',
+                toolCallId: 'call-1',
+                toolName: 'search',
+                output: {
+                  type: 'content',
+                  value: [
+                    {
+                      type: 'file',
+                      data: { type: 'text', text: 'See the policy document.' },
+                      mediaType: 'text/plain',
+                      filename: 'policy.txt',
+                      providerOptions: {
+                        anthropic: { citations: { enabled: true } },
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      });
+
+      expect(result.content).toMatchInlineSnapshot(`
+        [
+          {
+            "text": "The retrieved document mentions the policy.",
+            "type": "text",
+          },
+          {
+            "filename": "policy.txt",
+            "id": "test-tool-result-citation-id",
+            "mediaType": "text/plain",
+            "providerMetadata": {
+              "anthropic": {
+                "citedText": "the policy",
+                "endCharIndex": 14,
+                "startCharIndex": 4,
+              },
+            },
+            "sourceType": "document",
+            "title": "policy.txt",
+            "type": "source",
+          },
+        ]
+      `);
+    });
+
     describe('function tool', () => {
       it('should extract tool calls', async () => {
         server.urls['https://api.anthropic.com/v1/messages'].response = {

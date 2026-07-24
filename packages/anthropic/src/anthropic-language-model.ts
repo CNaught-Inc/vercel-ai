@@ -67,13 +67,15 @@ import { CacheControlValidator } from './get-cache-control';
 import { mapAnthropicStopReason } from './map-anthropic-stop-reason';
 import { sanitizeJsonSchema } from './sanitize-json-schema';
 
+type ExtractedCitationDocument = {
+  title: string;
+  filename?: string;
+  mediaType: string;
+};
+
 function createCitationSource(
   citation: Citation,
-  citationDocuments: Array<{
-    title: string;
-    filename?: string;
-    mediaType: string;
-  }>,
+  citationDocuments: Array<ExtractedCitationDocument>,
   generateId: () => string,
 ): LanguageModelV4Source | undefined {
   if (citation.type === 'web_search_result_location') {
@@ -882,11 +884,9 @@ export class AnthropicLanguageModel implements LanguageModelV4 {
     return this.config.transformRequestBody?.(args, betas) ?? args;
   }
 
-  private extractCitationDocuments(prompt: LanguageModelV4Prompt): Array<{
-    title: string;
-    filename?: string;
-    mediaType: string;
-  }> {
+  private extractCitationDocuments(
+    prompt: LanguageModelV4Prompt,
+  ): Array<ExtractedCitationDocument> {
     const isCitationPart = (part: {
       type: string;
       mediaType?: string;
@@ -910,19 +910,39 @@ export class AnthropicLanguageModel implements LanguageModelV4 {
       return citationsConfig?.enabled ?? false;
     };
 
-    return prompt
+    const toCitationDocument = (part: {
+      filename?: string;
+      mediaType: string;
+    }): ExtractedCitationDocument => ({
+      title: part.filename ?? 'Untitled Document',
+      filename: part.filename,
+      mediaType: part.mediaType,
+    });
+
+    const documentsFromUserContent = prompt
       .filter(message => message.role === 'user')
       .flatMap(message => message.content)
       .filter(isCitationPart)
-      .map(part => {
-        // TypeScript knows this is a file part due to our filter
-        const filePart = part as Extract<typeof part, { type: 'file' }>;
-        return {
-          title: filePart.filename ?? 'Untitled Document',
-          filename: filePart.filename,
-          mediaType: filePart.mediaType,
-        };
-      });
+      // TypeScript knows this is a file part due to our filter
+      .map(part =>
+        toCitationDocument(part as Extract<typeof part, { type: 'file' }>),
+      );
+
+    // Documents can also be attached to tool results, in which case they are
+    // sent as `document` blocks nested inside the `tool_result` block.
+    const documentsFromToolResults = prompt
+      .filter(message => message.role === 'tool')
+      .flatMap(message => message.content)
+      .filter(part => part.type === 'tool-result')
+      .map(part => part.output)
+      .filter(output => output.type === 'content')
+      .flatMap(output => output.value)
+      .filter(isCitationPart)
+      .map(part =>
+        toCitationDocument(part as Extract<typeof part, { type: 'file' }>),
+      );
+
+    return [...documentsFromUserContent, ...documentsFromToolResults];
   }
 
   async doGenerate(

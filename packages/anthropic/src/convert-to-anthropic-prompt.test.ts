@@ -1241,6 +1241,224 @@ describe('tool messages', () => {
     `);
   });
 
+  it('should enable citations for PDF tool result content', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolName: 'document-search',
+              toolCallId: 'doc-search-1',
+              output: {
+                type: 'content',
+                value: [
+                  {
+                    type: 'file',
+                    data: {
+                      type: 'data',
+                      data: 'JVBERi0xLjQKJeLjz9MKNCAwIG9iago=',
+                    },
+                    mediaType: 'application/pdf',
+                    filename: 'report.pdf',
+                    providerOptions: {
+                      anthropic: {
+                        citations: { enabled: true },
+                        context: 'doc-123',
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result).toMatchInlineSnapshot(`
+      {
+        "betas": Set {
+          "pdfs-2024-09-25",
+        },
+        "prompt": {
+          "messages": [
+            {
+              "content": [
+                {
+                  "cache_control": undefined,
+                  "content": [
+                    {
+                      "citations": {
+                        "enabled": true,
+                      },
+                      "context": "doc-123",
+                      "source": {
+                        "data": "JVBERi0xLjQKJeLjz9MKNCAwIG9iago=",
+                        "media_type": "application/pdf",
+                        "type": "base64",
+                      },
+                      "title": "report.pdf",
+                      "type": "document",
+                    },
+                  ],
+                  "is_error": undefined,
+                  "tool_use_id": "doc-search-1",
+                  "type": "tool_result",
+                },
+              ],
+              "role": "user",
+            },
+          ],
+          "system": undefined,
+        },
+      }
+    `);
+  });
+
+  it('should convert an inline text file tool result content part to a document', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolName: 'document-search',
+              toolCallId: 'doc-search-1',
+              output: {
+                type: 'content',
+                value: [
+                  {
+                    type: 'file',
+                    data: { type: 'text', text: 'The document contents.' },
+                    mediaType: 'text/plain',
+                    filename: 'notes.txt',
+                    providerOptions: {
+                      anthropic: {
+                        citations: { enabled: true },
+                        title: 'Meeting notes',
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result).toMatchInlineSnapshot(`
+      {
+        "betas": Set {},
+        "prompt": {
+          "messages": [
+            {
+              "content": [
+                {
+                  "cache_control": undefined,
+                  "content": [
+                    {
+                      "citations": {
+                        "enabled": true,
+                      },
+                      "source": {
+                        "data": "The document contents.",
+                        "media_type": "text/plain",
+                        "type": "text",
+                      },
+                      "title": "Meeting notes",
+                      "type": "document",
+                    },
+                  ],
+                  "is_error": undefined,
+                  "tool_use_id": "doc-search-1",
+                  "type": "tool_result",
+                },
+              ],
+              "role": "user",
+            },
+          ],
+          "system": undefined,
+        },
+      }
+    `);
+  });
+
+  it('should convert a text/plain data file tool result content part to a document', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolName: 'document-search',
+              toolCallId: 'doc-search-1',
+              output: {
+                type: 'content',
+                value: [
+                  {
+                    type: 'file',
+                    // base64 for 'The document contents.'
+                    data: {
+                      type: 'data',
+                      data: 'VGhlIGRvY3VtZW50IGNvbnRlbnRzLg==',
+                    },
+                    mediaType: 'text/plain',
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result).toMatchInlineSnapshot(`
+      {
+        "betas": Set {},
+        "prompt": {
+          "messages": [
+            {
+              "content": [
+                {
+                  "cache_control": undefined,
+                  "content": [
+                    {
+                      "source": {
+                        "data": "The document contents.",
+                        "media_type": "text/plain",
+                        "type": "text",
+                      },
+                      "type": "document",
+                    },
+                  ],
+                  "is_error": undefined,
+                  "tool_use_id": "doc-search-1",
+                  "type": "tool_result",
+                },
+              ],
+              "role": "user",
+            },
+          ],
+          "system": undefined,
+        },
+      }
+    `);
+  });
+
   it('should handle tool result with custom tool-reference content for custom tool search', async () => {
     const result = await convertToAnthropicPrompt({
       prompt: [
