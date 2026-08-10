@@ -343,16 +343,30 @@ export async function convertToAnthropicMessagesPrompt({
                     }
 
                     // Container upload: make the file available on disk in the
-                    // code execution container (for skills like docx/xlsx).
-                    if (
+                    // code execution container (for skills like docx/xlsx, and
+                    // for any file the model needs to process with code).
+                    //
+                    // Additive, not exclusive: a container upload puts the bytes
+                    // on disk but tells the model nothing about them, so for the
+                    // media types Claude reads natively we emit the native block
+                    // too. Replacing it would trade the model's ability to *see*
+                    // an attached image for its ability to open it.
+                    // Truthy rather than non-null, to stay consistent with how an
+                    // empty id is treated everywhere else in this branch: it
+                    // adds no beta header and selects no `file` source. Letting
+                    // '' through here would emit file_id: '' and, for a media
+                    // type with no native block, swallow the error below.
+                    const containerUploadFileId =
                       fileId &&
                       (await shouldUseContainerUpload(part.providerOptions))
-                    ) {
+                        ? fileId
+                        : undefined;
+
+                    if (containerUploadFileId != null) {
                       anthropicContent.push({
                         type: 'container_upload',
-                        file_id: fileId,
+                        file_id: containerUploadFileId,
                       });
-                      break;
                     }
 
                     if (part.mediaType.startsWith('image/')) {
@@ -446,7 +460,10 @@ export async function convertToAnthropicMessagesPrompt({
                         }),
                         cache_control: cacheControl,
                       });
-                    } else {
+                    } else if (containerUploadFileId == null) {
+                      // Media types Claude can't read natively are only
+                      // supportable as a container upload, where a skill parses
+                      // them off disk.
                       throw new UnsupportedFunctionalityError({
                         functionality: `media type: ${part.mediaType}`,
                       });
