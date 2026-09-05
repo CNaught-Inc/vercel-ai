@@ -513,113 +513,174 @@ export async function convertToAnthropicPrompt({
                 let contentValue: AnthropicToolResultContent['content'];
                 switch (output.type) {
                   case 'content':
-                    contentValue = output.value
-                      .map(contentPart => {
-                        switch (contentPart.type) {
-                          case 'text':
-                            return {
-                              type: 'text' as const,
-                              text: contentPart.text,
-                            };
-                          case 'file': {
-                            const topLevel = getTopLevelMediaType(
-                              contentPart.mediaType,
-                            );
+                    contentValue = (
+                      await Promise.all(
+                        output.value.map(async contentPart => {
+                          switch (contentPart.type) {
+                            case 'text':
+                              return {
+                                type: 'text' as const,
+                                text: contentPart.text,
+                              };
+                            case 'file': {
+                              const topLevel = getTopLevelMediaType(
+                                contentPart.mediaType,
+                              );
 
-                            if (contentPart.data.type === 'url') {
-                              if (topLevel === 'image') {
+                              if (contentPart.data.type === 'url') {
+                                if (topLevel === 'image') {
+                                  return {
+                                    type: 'image' as const,
+                                    source: {
+                                      type: 'url' as const,
+                                      url: contentPart.data.url.toString(),
+                                    },
+                                  };
+                                }
                                 return {
-                                  type: 'image' as const,
+                                  type: 'document' as const,
                                   source: {
                                     type: 'url' as const,
                                     url: contentPart.data.url.toString(),
                                   },
                                 };
                               }
-                              return {
-                                type: 'document' as const,
-                                source: {
-                                  type: 'url' as const,
-                                  url: contentPart.data.url.toString(),
-                                },
-                              };
-                            }
 
-                            if (contentPart.data.type === 'data') {
-                              if (topLevel === 'image') {
+                              // Documents inside tool results can carry the
+                              // same citation metadata as user file parts, so
+                              // that RAG-style tools can return citable
+                              // documents.
+                              const getCitationDocumentFields = async () => {
+                                const enableCitations =
+                                  await shouldEnableCitations(
+                                    contentPart.providerOptions,
+                                  );
+
+                                if (!enableCitations) {
+                                  return {};
+                                }
+
+                                const metadata = await getDocumentMetadata(
+                                  contentPart.providerOptions,
+                                );
+
                                 return {
-                                  type: 'image' as const,
-                                  source: {
-                                    type: 'base64' as const,
-                                    media_type: resolveFullMediaType({
-                                      part: contentPart,
-                                    }),
-                                    data: convertToBase64(
-                                      contentPart.data.data,
-                                    ),
-                                  },
+                                  title:
+                                    metadata.title ??
+                                    contentPart.filename ??
+                                    'Untitled Document',
+                                  ...(metadata.context && {
+                                    context: metadata.context,
+                                  }),
+                                  citations: { enabled: true as const },
                                 };
-                              }
-                              if (
-                                resolveFullMediaType({ part: contentPart }) ===
-                                'application/pdf'
-                              ) {
-                                betas.add('pdfs-2024-09-25');
+                              };
+
+                              if (contentPart.data.type === 'text') {
                                 return {
                                   type: 'document' as const,
                                   source: {
-                                    type: 'base64' as const,
-                                    media_type: 'application/pdf',
-                                    data: convertToBase64(
-                                      contentPart.data.data,
-                                    ),
+                                    type: 'text' as const,
+                                    media_type: 'text/plain' as const,
+                                    data: contentPart.data.text,
                                   },
+                                  ...(await getCitationDocumentFields()),
                                 };
+                              }
+
+                              if (contentPart.data.type === 'data') {
+                                if (topLevel === 'image') {
+                                  return {
+                                    type: 'image' as const,
+                                    source: {
+                                      type: 'base64' as const,
+                                      media_type: resolveFullMediaType({
+                                        part: contentPart,
+                                      }),
+                                      data: convertToBase64(
+                                        contentPart.data.data,
+                                      ),
+                                    },
+                                  };
+                                }
+
+                                const fullMediaType = resolveFullMediaType({
+                                  part: contentPart,
+                                });
+
+                                if (fullMediaType === 'application/pdf') {
+                                  betas.add('pdfs-2024-09-25');
+                                  return {
+                                    type: 'document' as const,
+                                    source: {
+                                      type: 'base64' as const,
+                                      media_type: 'application/pdf',
+                                      data: convertToBase64(
+                                        contentPart.data.data,
+                                      ),
+                                    },
+                                    ...(await getCitationDocumentFields()),
+                                  };
+                                }
+
+                                if (fullMediaType === 'text/plain') {
+                                  return {
+                                    type: 'document' as const,
+                                    source: {
+                                      type: 'text' as const,
+                                      media_type: 'text/plain' as const,
+                                      data: convertBytesDataToString(
+                                        contentPart.data.data,
+                                      ),
+                                    },
+                                    ...(await getCitationDocumentFields()),
+                                  };
+                                }
+
+                                warnings.push({
+                                  type: 'other',
+                                  message: `unsupported tool content part type: ${contentPart.type} with media type: ${contentPart.mediaType}`,
+                                });
+
+                                return undefined;
                               }
 
                               warnings.push({
                                 type: 'other',
-                                message: `unsupported tool content part type: ${contentPart.type} with media type: ${contentPart.mediaType}`,
+                                message: `unsupported tool content part type: ${contentPart.type} with data type: ${contentPart.data.type}`,
                               });
 
                               return undefined;
                             }
-
-                            warnings.push({
-                              type: 'other',
-                              message: `unsupported tool content part type: ${contentPart.type} with data type: ${contentPart.data.type}`,
-                            });
-
-                            return undefined;
-                          }
-                          case 'custom': {
-                            const anthropicOptions = contentPart.providerOptions
-                              ?.anthropic as
-                              | { type: string; toolName?: string }
-                              | undefined;
-                            if (anthropicOptions?.type === 'tool-reference') {
-                              return {
-                                type: 'tool_reference' as const,
-                                tool_name: anthropicOptions.toolName!,
-                              };
+                            case 'custom': {
+                              const anthropicOptions = contentPart
+                                .providerOptions?.anthropic as
+                                | { type: string; toolName?: string }
+                                | undefined;
+                              if (anthropicOptions?.type === 'tool-reference') {
+                                return {
+                                  type: 'tool_reference' as const,
+                                  tool_name: anthropicOptions.toolName!,
+                                };
+                              }
+                              warnings.push({
+                                type: 'other',
+                                message: `unsupported custom tool content part`,
+                              });
+                              return undefined;
                             }
-                            warnings.push({
-                              type: 'other',
-                              message: `unsupported custom tool content part`,
-                            });
-                            return undefined;
-                          }
-                          default: {
-                            warnings.push({
-                              type: 'other',
-                              message: `unsupported tool content part type: ${(contentPart as { type: string }).type}`,
-                            });
+                            default: {
+                              warnings.push({
+                                type: 'other',
+                                message: `unsupported tool content part type: ${(contentPart as { type: string }).type}`,
+                              });
 
-                            return undefined;
+                              return undefined;
+                            }
                           }
-                        }
-                      })
-                      .filter(isNonNullable);
+                        }),
+                      )
+                    ).filter(isNonNullable);
                     break;
                   case 'text':
                   case 'error-text':

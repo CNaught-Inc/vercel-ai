@@ -11893,3 +11893,215 @@ describe('claude-opus-4-7 specific behavior', () => {
     );
   });
 });
+
+describe('citations from documents in tool results', () => {
+  const server = createTestServer({
+    'https://api.anthropic.com/v1/messages': {},
+  });
+
+  function createModel() {
+    return createAnthropic({
+      apiKey: 'test-api-key',
+      generateId: mockId({ prefix: 'cite' }),
+    })('claude-3-haiku-20240307');
+  }
+
+  function prepareCitationResponse(citations: unknown[]) {
+    server.urls['https://api.anthropic.com/v1/messages'].response = {
+      type: 'json-value',
+      body: {
+        id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Cited answer.', citations }],
+        model: 'claude-3-haiku-20240307',
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: { input_tokens: 4, output_tokens: 30 },
+      },
+    };
+  }
+
+  it('should resolve document citations against documents in tool results', async () => {
+    prepareCitationResponse([
+      {
+        type: 'char_location',
+        cited_text: 'The sky is blue.',
+        document_index: 0,
+        document_title: null,
+        start_char_index: 0,
+        end_char_index: 16,
+      },
+    ]);
+
+    const result = await createModel().doGenerate({
+      prompt: [
+        {
+          role: 'user',
+          content: [{ type: 'text', text: 'Search the notes.' }],
+        },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'call-1',
+              toolName: 'search',
+              input: '{}',
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'call-1',
+              toolName: 'search',
+              output: {
+                type: 'content',
+                value: [
+                  {
+                    type: 'file',
+                    mediaType: 'text/plain',
+                    filename: 'notes.txt',
+                    data: { type: 'text', text: 'The sky is blue.' },
+                    providerOptions: {
+                      anthropic: {
+                        citations: { enabled: true },
+                        title: 'Field Notes',
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(result.content).toEqual([
+      { type: 'text', text: 'Cited answer.' },
+      {
+        type: 'source',
+        sourceType: 'document',
+        id: 'cite-0',
+        mediaType: 'text/plain',
+        title: 'Field Notes',
+        filename: 'notes.txt',
+        providerMetadata: {
+          anthropic: {
+            citedText: 'The sky is blue.',
+            startCharIndex: 0,
+            endCharIndex: 16,
+          },
+        },
+      },
+    ]);
+  });
+
+  it('should index citation documents in prompt order across user and tool messages', async () => {
+    prepareCitationResponse([
+      {
+        type: 'page_location',
+        cited_text: 'From the tool document',
+        document_index: 1,
+        document_title: null,
+        start_page_number: 2,
+        end_page_number: 2,
+      },
+      {
+        type: 'char_location',
+        cited_text: 'From the user document',
+        document_index: 0,
+        document_title: null,
+        start_char_index: 5,
+        end_char_index: 10,
+      },
+    ]);
+
+    const result = await createModel().doGenerate({
+      prompt: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'file',
+              mediaType: 'text/plain',
+              filename: 'user.txt',
+              data: { type: 'text', text: 'User document text' },
+              providerOptions: { anthropic: { citations: { enabled: true } } },
+            },
+            { type: 'text', text: 'Compare with the report.' },
+          ],
+        },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'call-1',
+              toolName: 'fetch_report',
+              input: '{}',
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'call-1',
+              toolName: 'fetch_report',
+              output: {
+                type: 'content',
+                value: [
+                  {
+                    type: 'file',
+                    mediaType: 'application/pdf',
+                    filename: 'report.pdf',
+                    data: { type: 'data', data: 'base64pdf' },
+                    providerOptions: {
+                      anthropic: { citations: { enabled: true } },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    const sources = result.content.filter(part => part.type === 'source');
+    expect(sources).toEqual([
+      expect.objectContaining({
+        sourceType: 'document',
+        mediaType: 'application/pdf',
+        filename: 'report.pdf',
+        title: 'report.pdf',
+        providerMetadata: {
+          anthropic: {
+            citedText: 'From the tool document',
+            startPageNumber: 2,
+            endPageNumber: 2,
+          },
+        },
+      }),
+      expect.objectContaining({
+        sourceType: 'document',
+        mediaType: 'text/plain',
+        filename: 'user.txt',
+        title: 'user.txt',
+        providerMetadata: {
+          anthropic: {
+            citedText: 'From the user document',
+            startCharIndex: 5,
+            endCharIndex: 10,
+          },
+        },
+      }),
+    ]);
+  });
+});

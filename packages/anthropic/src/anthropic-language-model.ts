@@ -118,13 +118,19 @@ function getAnthropicStreamErrorMetadata(type: string): {
   }
 }
 
+/**
+ * A document in the request that has citations enabled. The list index
+ * corresponds to the `document_index` in document citations.
+ */
+export type CitationDocument = {
+  title: string;
+  filename?: string;
+  mediaType: string;
+};
+
 export function createCitationSource(
   citation: Citation,
-  citationDocuments: Array<{
-    title: string;
-    filename?: string;
-    mediaType: string;
-  }>,
+  citationDocuments: Array<CitationDocument>,
   generateId: () => string,
 ): LanguageModelV4Source | undefined {
   if (citation.type === 'web_search_result_location') {
@@ -975,16 +981,33 @@ export class AnthropicLanguageModel implements LanguageModelV4 {
     return this.config.transformRequestBody?.(args, betas) ?? args;
   }
 
-  private extractCitationDocuments(prompt: LanguageModelV4Prompt): Array<{
-    title: string;
-    filename?: string;
-    mediaType: string;
-  }> {
+  /**
+   * Collects the documents with citations enabled in the order they appear
+   * in the request, so that the `document_index` of a citation can be
+   * resolved. Documents can be user file parts or file parts inside tool
+   * result content.
+   */
+  private extractCitationDocuments(
+    prompt: LanguageModelV4Prompt,
+  ): Array<CitationDocument> {
+    type CitationFilePart = {
+      type: 'file';
+      mediaType: string;
+      filename?: string;
+      providerOptions?: {
+        anthropic?: {
+          citations?: { enabled?: boolean };
+          title?: string;
+        };
+      };
+    };
+
     const isCitationPart = (part: {
       type: string;
       mediaType?: string;
+      filename?: string;
       providerOptions?: { anthropic?: { citations?: { enabled?: boolean } } };
-    }) => {
+    }): part is CitationFilePart => {
       if (part.type !== 'file') {
         return false;
       }
@@ -1003,19 +1026,33 @@ export class AnthropicLanguageModel implements LanguageModelV4 {
       return citationsConfig?.enabled ?? false;
     };
 
+    const toCitationDocument = (part: CitationFilePart): CitationDocument => {
+      const anthropic = part.providerOptions?.anthropic;
+      return {
+        title: anthropic?.title ?? part.filename ?? 'Untitled Document',
+        filename: part.filename,
+        mediaType: part.mediaType,
+      };
+    };
+
     return prompt
-      .filter(message => message.role === 'user')
-      .flatMap(message => message.content)
-      .filter(isCitationPart)
-      .map(part => {
-        // TypeScript knows this is a file part due to our filter
-        const filePart = part as Extract<typeof part, { type: 'file' }>;
-        return {
-          title: filePart.filename ?? 'Untitled Document',
-          filename: filePart.filename,
-          mediaType: filePart.mediaType,
-        };
-      });
+      .flatMap(message => {
+        switch (message.role) {
+          case 'user':
+            return message.content;
+          case 'tool':
+            return message.content
+              .filter(part => part.type === 'tool-result')
+              .map(part => part.output)
+              .filter(output => output.type === 'content')
+              .flatMap(output => output.value);
+          default:
+            return [];
+        }
+      })
+      .flatMap(part =>
+        isCitationPart(part) ? [toCitationDocument(part)] : [],
+      );
   }
 
   async doGenerate(

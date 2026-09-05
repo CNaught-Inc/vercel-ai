@@ -5043,3 +5043,179 @@ describe('citations', () => {
     });
   });
 });
+
+describe('citable documents in tool results', () => {
+  it('should convert inline text documents with citation metadata', async () => {
+    const warnings: SharedV4Warning[] = [];
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'call-1',
+              toolName: 'search',
+              output: {
+                type: 'content',
+                value: [
+                  {
+                    type: 'file',
+                    mediaType: 'text/plain',
+                    filename: 'notes.txt',
+                    data: { type: 'text', text: 'The sky is blue.' },
+                    providerOptions: {
+                      anthropic: {
+                        citations: { enabled: true },
+                        title: 'Field Notes',
+                        context: '{"documentId":"doc-1"}',
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings,
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(warnings).toEqual([]);
+    expect(result.prompt.messages).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'call-1',
+            is_error: undefined,
+            cache_control: undefined,
+            content: [
+              {
+                type: 'document',
+                source: {
+                  type: 'text',
+                  media_type: 'text/plain',
+                  data: 'The sky is blue.',
+                },
+                title: 'Field Notes',
+                context: '{"documentId":"doc-1"}',
+                citations: { enabled: true },
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('should convert text/plain byte documents without citations to plain documents', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'call-1',
+              toolName: 'search',
+              output: {
+                type: 'content',
+                value: [
+                  {
+                    type: 'file',
+                    mediaType: 'text/plain',
+                    data: {
+                      type: 'data',
+                      data: Buffer.from('Hello from bytes').toString('base64'),
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result.prompt.messages[0].content).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'call-1',
+        is_error: undefined,
+        cache_control: undefined,
+        content: [
+          {
+            type: 'document',
+            source: {
+              type: 'text',
+              media_type: 'text/plain',
+              data: 'Hello from bytes',
+            },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('should convert PDF documents with citations enabled and default title', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'call-1',
+              toolName: 'search',
+              output: {
+                type: 'content',
+                value: [
+                  {
+                    type: 'file',
+                    mediaType: 'application/pdf',
+                    data: { type: 'data', data: 'base64pdf' },
+                    providerOptions: {
+                      anthropic: { citations: { enabled: true } },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result.betas).toEqual(new Set(['pdfs-2024-09-25']));
+    expect(result.prompt.messages[0].content).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'call-1',
+        is_error: undefined,
+        cache_control: undefined,
+        content: [
+          {
+            type: 'document',
+            source: {
+              type: 'base64',
+              media_type: 'application/pdf',
+              data: 'base64pdf',
+            },
+            title: 'Untitled Document',
+            citations: { enabled: true },
+          },
+        ],
+      },
+    ]);
+  });
+});
