@@ -330,9 +330,26 @@ export async function convertToAnthropicPrompt({
                             cache_control: cacheControl,
                           });
                         } else {
+                          const enableCitations = await shouldEnableCitations(
+                            part.providerOptions,
+                          );
+
+                          const metadata = await getDocumentMetadata(
+                            part.providerOptions,
+                          );
+
+                          const title = metadata.title ?? part.filename;
+
                           anthropicContent.push({
                             type: 'document',
                             source: { type: 'file', file_id: fileId },
+                            ...(title != null && { title }),
+                            ...(metadata.context && {
+                              context: metadata.context,
+                            }),
+                            ...(enableCitations && {
+                              citations: { enabled: true },
+                            }),
                             cache_control: cacheControl,
                           });
                         }

@@ -5334,3 +5334,46 @@ describe('container uploads on tool messages', () => {
     ]);
   });
 });
+
+describe('provider referenced documents', () => {
+  it('should include document metadata on provider referenced documents', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'file',
+              mediaType: 'text/plain',
+              data: {
+                type: 'reference',
+                reference: { anthropic: 'file-txt-1' },
+              },
+              providerOptions: {
+                anthropic: {
+                  title: 'Meeting Notes',
+                  context: 'Notes from Monday',
+                  citations: { enabled: true },
+                },
+              },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result.prompt.messages[0].content).toEqual([
+      {
+        type: 'document',
+        source: { type: 'file', file_id: 'file-txt-1' },
+        title: 'Meeting Notes',
+        context: 'Notes from Monday',
+        citations: { enabled: true },
+        cache_control: undefined,
+      },
+    ]);
+  });
+});
