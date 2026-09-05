@@ -5219,3 +5219,77 @@ describe('citable documents in tool results', () => {
     ]);
   });
 });
+
+describe('search results in tool results', () => {
+  it('should convert search-result custom parts to search_result blocks', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'call-1',
+              toolName: 'search',
+              output: {
+                type: 'content',
+                value: [
+                  {
+                    type: 'custom',
+                    providerOptions: {
+                      anthropic: {
+                        type: 'search-result',
+                        source: 'https://example.com/article',
+                        title: 'Example Article',
+                        content: [{ type: 'text', text: 'Some cited text.' }],
+                        citations: { enabled: true },
+                      },
+                    },
+                  },
+                  {
+                    type: 'custom',
+                    providerOptions: {
+                      anthropic: {
+                        type: 'search-result',
+                        source: 'doc-42',
+                        title: 'Internal Document',
+                        content: [{ type: 'text', text: 'Internal text.' }],
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result.prompt.messages[0].content).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'call-1',
+        is_error: undefined,
+        cache_control: undefined,
+        content: [
+          {
+            type: 'search_result',
+            source: 'https://example.com/article',
+            title: 'Example Article',
+            content: [{ type: 'text', text: 'Some cited text.' }],
+            citations: { enabled: true },
+          },
+          {
+            type: 'search_result',
+            source: 'doc-42',
+            title: 'Internal Document',
+            content: [{ type: 'text', text: 'Internal text.' }],
+          },
+        ],
+      },
+    ]);
+  });
+});

@@ -149,6 +149,42 @@ export function createCitationSource(
     };
   }
 
+  // Search result citations (from `search_result` blocks in tool results).
+  // `source` is either a URL or an opaque identifier such as a document id.
+  if (citation.type === 'search_result_location') {
+    const isUrl = /^https?:\/\//i.test(citation.source);
+
+    if (isUrl) {
+      return {
+        type: 'source' as const,
+        sourceType: 'url' as const,
+        id: generateId(),
+        url: citation.source,
+        title: citation.title ?? undefined,
+        providerMetadata: {
+          anthropic: {
+            citedText: citation.cited_text,
+          },
+        } satisfies SharedV4ProviderMetadata,
+      };
+    }
+
+    return {
+      type: 'source' as const,
+      sourceType: 'document' as const,
+      id: generateId(),
+      mediaType: 'text/plain',
+      title: citation.title ?? 'Search Result',
+      providerMetadata: {
+        anthropic: {
+          citedText: citation.cited_text,
+          // the identifier of the search result, e.g. a document id
+          context: citation.source,
+        },
+      } satisfies SharedV4ProviderMetadata,
+    };
+  }
+
   if (citation.type !== 'page_location' && citation.type !== 'char_location') {
     return;
   }
