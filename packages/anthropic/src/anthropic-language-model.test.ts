@@ -11970,6 +11970,7 @@ describe('citations from documents in tool results', () => {
                       anthropic: {
                         citations: { enabled: true },
                         title: 'Field Notes',
+                        context: 'doc-1',
                       },
                     },
                   },
@@ -11995,6 +11996,7 @@ describe('citations from documents in tool results', () => {
             citedText: 'The sky is blue.',
             startCharIndex: 0,
             endCharIndex: 16,
+            context: 'doc-1',
           },
         },
       },

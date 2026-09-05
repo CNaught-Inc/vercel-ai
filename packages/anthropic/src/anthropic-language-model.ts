@@ -126,6 +126,7 @@ export type CitationDocument = {
   title: string;
   filename?: string;
   mediaType: string;
+  context?: string;
 };
 
 export function createCitationSource(
@@ -203,8 +204,8 @@ export function createCitationSource(
     title: citation.document_title ?? documentInfo.title,
     filename: documentInfo.filename,
     providerMetadata: {
-      anthropic:
-        citation.type === 'page_location'
+      anthropic: {
+        ...(citation.type === 'page_location'
           ? {
               citedText: citation.cited_text,
               startPageNumber: citation.start_page_number,
@@ -214,7 +215,11 @@ export function createCitationSource(
               citedText: citation.cited_text,
               startCharIndex: citation.start_char_index,
               endCharIndex: citation.end_char_index,
-            },
+            }),
+        ...(documentInfo.context != null && {
+          context: documentInfo.context,
+        }),
+      },
     } satisfies SharedV4ProviderMetadata,
   };
 }
@@ -1034,6 +1039,7 @@ export class AnthropicLanguageModel implements LanguageModelV4 {
         anthropic?: {
           citations?: { enabled?: boolean };
           title?: string;
+          context?: string;
         };
       };
     };
@@ -1068,6 +1074,7 @@ export class AnthropicLanguageModel implements LanguageModelV4 {
         title: anthropic?.title ?? part.filename ?? 'Untitled Document',
         filename: part.filename,
         mediaType: part.mediaType,
+        context: anthropic?.context,
       };
     };
 
