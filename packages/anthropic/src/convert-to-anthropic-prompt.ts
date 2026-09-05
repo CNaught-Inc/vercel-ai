@@ -314,6 +314,28 @@ export async function convertToAnthropicPrompt({
                         });
                         betas.add('files-api-2025-04-14');
 
+                        const isImage =
+                          getTopLevelMediaType(part.mediaType) === 'image';
+
+                        // Media types Claude can read natively. Anything else
+                        // is only supportable as a container upload, where a
+                        // skill parses it off disk.
+                        const isNativelyReadable =
+                          isImage ||
+                          part.mediaType === 'application/pdf' ||
+                          part.mediaType === 'text/plain';
+
+                        // Container upload: make the file available on disk in
+                        // the code execution container (for skills like
+                        // docx/xlsx, and for any file the model needs to
+                        // process with code).
+                        //
+                        // Additive, not exclusive: a container upload puts the
+                        // bytes on disk but tells the model nothing about them,
+                        // so for the media types Claude reads natively we emit
+                        // the native block too. Replacing it would trade the
+                        // model's ability to *see* an attached image for its
+                        // ability to open it.
                         if (
                           await shouldUseContainerUpload(part.providerOptions)
                         ) {
@@ -321,9 +343,13 @@ export async function convertToAnthropicPrompt({
                             type: 'container_upload',
                             file_id: fileId,
                           });
-                        } else if (
-                          getTopLevelMediaType(part.mediaType) === 'image'
-                        ) {
+
+                          if (!isNativelyReadable) {
+                            break;
+                          }
+                        }
+
+                        if (isImage) {
                           anthropicContent.push({
                             type: 'image',
                             source: { type: 'file', file_id: fileId },

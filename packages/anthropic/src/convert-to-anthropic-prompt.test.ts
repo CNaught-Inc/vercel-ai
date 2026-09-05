@@ -5377,3 +5377,111 @@ describe('provider referenced documents', () => {
     ]);
   });
 });
+
+describe('native blocks alongside container uploads', () => {
+  it('should emit a native document block alongside the container upload for PDFs', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'file',
+              mediaType: 'application/pdf',
+              filename: 'report.pdf',
+              data: {
+                type: 'reference',
+                reference: { anthropic: 'file-pdf-1' },
+              },
+              providerOptions: {
+                anthropic: {
+                  containerUpload: true,
+                  citations: { enabled: true },
+                  context: 'Quarterly report',
+                },
+              },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result.betas).toEqual(new Set(['files-api-2025-04-14']));
+    expect(result.prompt.messages[0].content).toEqual([
+      { type: 'container_upload', file_id: 'file-pdf-1' },
+      {
+        type: 'document',
+        source: { type: 'file', file_id: 'file-pdf-1' },
+        title: 'report.pdf',
+        context: 'Quarterly report',
+        citations: { enabled: true },
+        cache_control: undefined,
+      },
+    ]);
+  });
+
+  it('should emit a native image block alongside the container upload for images', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'file',
+              mediaType: 'image/png',
+              data: {
+                type: 'reference',
+                reference: { anthropic: 'file-img-1' },
+              },
+              providerOptions: { anthropic: { containerUpload: true } },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result.prompt.messages[0].content).toEqual([
+      { type: 'container_upload', file_id: 'file-img-1' },
+      {
+        type: 'image',
+        source: { type: 'file', file_id: 'file-img-1' },
+        cache_control: undefined,
+      },
+    ]);
+  });
+
+  it('should only emit the container upload for media types Claude cannot read natively', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'file',
+              mediaType:
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+              data: {
+                type: 'reference',
+                reference: { anthropic: 'file-docx-1' },
+              },
+              providerOptions: { anthropic: { containerUpload: true } },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result.prompt.messages[0].content).toEqual([
+      { type: 'container_upload', file_id: 'file-docx-1' },
+    ]);
+  });
+});
