@@ -2035,6 +2035,14 @@ describe('Anthropic batch', () => {
             content: [
               { type: 'text', text: 'No citations' },
               { type: 'text', text: 'New citations' },
+              {
+                type: 'source',
+                sourceType: 'url',
+                url: 'https://example.com',
+                providerMetadata: {
+                  anthropic: { citedText: 'search result' },
+                },
+              },
             ],
             usage: {
               inputTokens: { total: 13 },
