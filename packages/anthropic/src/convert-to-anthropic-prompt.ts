@@ -35,6 +35,7 @@ import {
 import {
   anthropicFilePartProviderOptions,
   anthropicSystemMessageProviderOptions,
+  anthropicToolMessageProviderOptions,
 } from './anthropic-language-model-options';
 import { CacheControlValidator } from './get-cache-control';
 import { advisor_20260301OutputSchema } from './tool/advisor_20260301';
@@ -742,6 +743,28 @@ export async function convertToAnthropicPrompt({
               const _exhaustiveCheck: never = role;
               throw new Error(`Unsupported role: ${_exhaustiveCheck}`);
             }
+          }
+
+          // Files produced by a tool can be made available in the code
+          // execution container. `container_upload` blocks are only valid at
+          // the top level of a user message (not nested inside a tool_result),
+          // so they are emitted as siblings of the tool results.
+          const containerUploads = (
+            await parseProviderOptions({
+              provider: 'anthropic',
+              providerOptions: message.providerOptions,
+              schema: anthropicToolMessageProviderOptions,
+            })
+          )?.containerUploads;
+
+          if (containerUploads != null && containerUploads.length > 0) {
+            for (const upload of containerUploads) {
+              anthropicContent.push({
+                type: 'container_upload',
+                file_id: upload.fileId,
+              });
+            }
+            betas.add('files-api-2025-04-14');
           }
         }
 

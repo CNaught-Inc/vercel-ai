@@ -68,6 +68,27 @@ export type AnthropicFilePartProviderOptions = z.infer<
 >;
 
 /**
+ * Anthropic provider options for tool (and user) messages.
+ */
+export const anthropicToolMessageProviderOptions = z.object({
+  /**
+   * Files (uploaded via the Anthropic Files API) to make available on disk in
+   * the code execution container alongside this message.
+   *
+   * `container_upload` blocks are only valid at the top level of a user
+   * message, not nested inside a tool result, so files produced by a tool
+   * are attached to the message instead of the tool result output. They are
+   * emitted as siblings of the tool results. The required
+   * `files-api-2025-04-14` beta is added automatically.
+   */
+  containerUploads: z.array(z.object({ fileId: z.string() })).optional(),
+});
+
+export type AnthropicToolMessageProviderOptions = z.infer<
+  typeof anthropicToolMessageProviderOptions
+>;
+
+/**
  * Anthropic provider options for system messages.
  */
 export const anthropicSystemMessageProviderOptions = z.object({
