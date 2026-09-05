@@ -46,6 +46,7 @@ export interface AnthropicToolChangeContent {
 export interface AnthropicContainerUploadContent {
   type: 'container_upload';
   file_id: string;
+  cache_control?: never;
 }
 
 export interface AnthropicUserMessage {
