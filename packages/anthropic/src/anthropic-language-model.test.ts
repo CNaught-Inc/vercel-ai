@@ -12220,3 +12220,112 @@ describe('search result citations', () => {
     ]);
   });
 });
+
+describe('code execution input type injection in streaming', () => {
+  const server = createTestServer({
+    'https://api.anthropic.com/v1/messages': {},
+  });
+
+  function prepareServerToolUseStream(contentBlock: Record<string, unknown>) {
+    server.urls['https://api.anthropic.com/v1/messages'].response = {
+      type: 'stream-chunks',
+      chunks: [
+        `data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-5","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":17,"output_tokens":1}}}\n\n`,
+        `data: ${JSON.stringify({
+          type: 'content_block_start',
+          index: 0,
+          content_block: contentBlock,
+        })}\n\n`,
+        `data: {"type":"content_block_stop","index":0}\n\n`,
+        `data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5}}\n\n`,
+        `data: {"type":"message_stop"}\n\n`,
+      ],
+    };
+  }
+
+  async function streamToolCalls() {
+    const { stream } = await createAnthropic({ apiKey: 'test-api-key' })(
+      'claude-sonnet-4-5',
+    ).doStream({ prompt: TEST_PROMPT });
+    const chunks = await convertReadableStreamToArray(stream);
+    return chunks.filter(chunk => chunk.type === 'tool-call');
+  }
+
+  it('should inject the input type when the full text editor input arrives without deltas', async () => {
+    prepareServerToolUseStream({
+      type: 'server_tool_use',
+      id: 'srvtoolu_1',
+      name: 'text_editor_code_execution',
+      input: { command: 'view', path: '/tmp/data.csv' },
+    });
+
+    const toolCalls = await streamToolCalls();
+
+    expect(toolCalls).toHaveLength(1);
+    expect(toolCalls[0]).toMatchObject({
+      toolCallId: 'srvtoolu_1',
+      toolName: 'code_execution',
+      providerExecuted: true,
+    });
+    expect(JSON.parse(toolCalls[0].input)).toEqual({
+      type: 'text_editor_code_execution',
+      command: 'view',
+      path: '/tmp/data.csv',
+    });
+  });
+
+  it('should inject the input type when the full bash input arrives without deltas', async () => {
+    prepareServerToolUseStream({
+      type: 'server_tool_use',
+      id: 'srvtoolu_2',
+      name: 'bash_code_execution',
+      input: { command: 'ls -la' },
+    });
+
+    const toolCalls = await streamToolCalls();
+
+    expect(JSON.parse(toolCalls[0].input)).toEqual({
+      type: 'bash_code_execution',
+      command: 'ls -la',
+    });
+  });
+
+  it('should only inject programmatic-tool-call for inputs shaped like { code }', async () => {
+    prepareServerToolUseStream({
+      type: 'server_tool_use',
+      id: 'srvtoolu_3',
+      name: 'code_execution',
+      input: { code: 'print(1)' },
+    });
+
+    expect(JSON.parse((await streamToolCalls())[0].input)).toEqual({
+      type: 'programmatic-tool-call',
+      code: 'print(1)',
+    });
+
+    prepareServerToolUseStream({
+      type: 'server_tool_use',
+      id: 'srvtoolu_4',
+      name: 'code_execution',
+      input: { command: 'view', path: '/tmp/x' },
+    });
+
+    expect(JSON.parse((await streamToolCalls())[0].input)).toEqual({
+      command: 'view',
+      path: '/tmp/x',
+    });
+  });
+
+  it('should not alter inputs of tools without an input type discriminator', async () => {
+    prepareServerToolUseStream({
+      type: 'server_tool_use',
+      id: 'srvtoolu_5',
+      name: 'web_fetch',
+      input: { url: 'https://example.com' },
+    });
+
+    expect(JSON.parse((await streamToolCalls())[0].input)).toEqual({
+      url: 'https://example.com',
+    });
+  });
+});

@@ -2406,21 +2406,32 @@ export class AnthropicLanguageModel implements LanguageModelV4 {
                         id: contentBlock.toolCallId,
                       });
 
-                      // For code_execution, inject 'programmatic-tool-call' type
-                      // when input has { code } format (programmatic tool calling)
+                      // The code_execution input schemas are discriminated on a
+                      // `type` field that the streamed events don't include.
+                      // The delta handler injects providerToolInputType into
+                      // the first input delta, but when Anthropic delivers the
+                      // full input in the initial server_tool_use block (no
+                      // deltas follow) that injection never runs, so the tool
+                      // call fails validation and the input is dropped. Inject
+                      // the stored discriminator here as a safety net, mirroring
+                      // the non-streaming path. The `code` guard keeps the
+                      // programmatic tool calling case limited to inputs shaped
+                      // like { code }.
                       let finalInput =
                         contentBlock.input === '' ? '{}' : contentBlock.input;
-                      if (contentBlock.providerToolName === 'code_execution') {
+                      if (contentBlock.providerToolInputType != null) {
                         try {
                           const parsed = secureJsonParse(finalInput);
                           if (
                             parsed != null &&
                             typeof parsed === 'object' &&
-                            'code' in parsed &&
-                            !('type' in parsed)
+                            !('type' in parsed) &&
+                            (contentBlock.providerToolInputType !==
+                              'programmatic-tool-call' ||
+                              'code' in parsed)
                           ) {
                             finalInput = JSON.stringify({
-                              type: 'programmatic-tool-call',
+                              type: contentBlock.providerToolInputType,
                               ...parsed,
                             });
                           }
