@@ -31,6 +31,7 @@ import {
   type ParseResult,
   type Resolvable,
 } from '@ai-sdk/provider-utils';
+
 import { anthropicFailedResponseHandler } from './anthropic-error';
 import type {
   AnthropicMessageMetadata,
@@ -61,13 +62,16 @@ import { CacheControlValidator } from './get-cache-control';
 import { mapAnthropicStopReason } from './map-anthropic-stop-reason';
 import { sanitizeJsonSchema } from './sanitize-json-schema';
 
+type ExtractedCitationDocument = {
+  title: string;
+  filename?: string;
+  mediaType: string;
+  context?: string;
+};
+
 function createCitationSource(
   citation: Citation,
-  citationDocuments: Array<{
-    title: string;
-    filename?: string;
-    mediaType: string;
-  }>,
+  citationDocuments: Array<ExtractedCitationDocument>,
   generateId: () => string,
 ): LanguageModelV3Source | undefined {
   if (citation.type === 'web_search_result_location') {
@@ -84,6 +88,43 @@ function createCitationSource(
         },
       } satisfies SharedV3ProviderMetadata,
     };
+  }
+
+  // Handle search result citations (from RAG tool results or third-party web search)
+  if (citation.type === 'search_result_location') {
+    // Check if source is a URL (starts with http:// or https://)
+    const isUrl = /^https?:\/\//i.test(citation.source);
+
+    if (isUrl) {
+      // Treat like web_search_result_location for URL sources
+      return {
+        type: 'source' as const,
+        sourceType: 'url' as const,
+        id: generateId(),
+        url: citation.source,
+        title: citation.title ?? undefined,
+        providerMetadata: {
+          anthropic: {
+            citedText: citation.cited_text,
+          },
+        } satisfies SharedV3ProviderMetadata,
+      };
+    } else {
+      // Treat as document for non-URL sources (e.g., documentId)
+      return {
+        type: 'source' as const,
+        sourceType: 'document' as const,
+        id: generateId(),
+        mediaType: 'text/plain',
+        title: citation.title ?? 'Search Result',
+        providerMetadata: {
+          anthropic: {
+            citedText: citation.cited_text,
+            context: citation.source, // documentId for UI compatibility
+          },
+        } satisfies SharedV3ProviderMetadata,
+      };
+    }
   }
 
   if (citation.type !== 'page_location' && citation.type !== 'char_location') {
@@ -110,11 +151,13 @@ function createCitationSource(
               citedText: citation.cited_text,
               startPageNumber: citation.start_page_number,
               endPageNumber: citation.end_page_number,
+              ...(documentInfo.context && { context: documentInfo.context }),
             }
           : {
               citedText: citation.cited_text,
               startCharIndex: citation.start_char_index,
               endCharIndex: citation.end_char_index,
+              ...(documentInfo.context && { context: documentInfo.context }),
             },
     } satisfies SharedV3ProviderMetadata,
   };
@@ -872,17 +915,15 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV3 {
     return this.config.transformRequestBody?.(args, betas) ?? args;
   }
 
-  private extractCitationDocuments(prompt: LanguageModelV3Prompt): Array<{
-    title: string;
-    filename?: string;
-    mediaType: string;
-  }> {
+  private extractCitationDocuments(
+    prompt: LanguageModelV3Prompt,
+  ): Array<ExtractedCitationDocument> {
     const isCitationPart = (part: {
       type: string;
       mediaType?: string;
       providerOptions?: { anthropic?: { citations?: { enabled?: boolean } } };
     }) => {
-      if (part.type !== 'file') {
+      if (part.type !== 'file' && part.type !== 'file-data') {
         return false;
       }
 
@@ -900,19 +941,56 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV3 {
       return citationsConfig?.enabled ?? false;
     };
 
-    return prompt
+    const documentsFromUserContent = prompt
       .filter(message => message.role === 'user')
       .flatMap(message => message.content)
       .filter(isCitationPart)
       .map(part => {
         // TypeScript knows this is a file part due to our filter
         const filePart = part as Extract<typeof part, { type: 'file' }>;
+        const anthropic = filePart.providerOptions?.anthropic as
+          | Record<string, unknown>
+          | undefined;
         return {
-          title: filePart.filename ?? 'Untitled Document',
+          title:
+            (anthropic?.title as string | undefined) ??
+            filePart.filename ??
+            'Untitled Document',
           filename: filePart.filename,
           mediaType: filePart.mediaType,
+          context: anthropic?.context as string | undefined,
         };
       });
+
+    const documentsFromToolResults = prompt
+      .filter(message => message.role === 'tool')
+      .flatMap(message => message.content)
+      .filter(
+        toolResultOrApprovalContent =>
+          toolResultOrApprovalContent.type == 'tool-result',
+      )
+      .map(toolResultContent => toolResultContent.output)
+      .filter(toolResultOutput => toolResultOutput.type === 'content')
+      .flatMap(toolResultOutput => toolResultOutput.value)
+      .filter(toolResultOutputPart => toolResultOutputPart.type === 'file-data')
+      .filter(isCitationPart)
+      .map(part => {
+        // TypeScript knows this is a file part due to our filter
+        const anthropic = part.providerOptions?.anthropic as
+          | Record<string, unknown>
+          | undefined;
+        return {
+          title:
+            (anthropic?.title as string | undefined) ??
+            part.filename ??
+            'Untitled Document',
+          filename: part.filename,
+          mediaType: part.mediaType,
+          context: anthropic?.context as string | undefined,
+        };
+      });
+
+    return documentsFromUserContent.concat(documentsFromToolResults);
   }
 
   async doGenerate(
@@ -2201,21 +2279,33 @@ export class AnthropicMessagesLanguageModel implements LanguageModelV3 {
                         id: contentBlock.toolCallId,
                       });
 
-                      // For code_execution, inject 'programmatic-tool-call' type
-                      // when input has { code } format (programmatic tool calling)
+                      // The code_execution input schemas are discriminated on a
+                      // `type` field that the streamed events don't include.
+                      // The delta handler injects providerToolInputType into
+                      // the first input delta, but when Anthropic delivers the
+                      // full input in the initial server_tool_use block (no
+                      // deltas follow) that injection never runs, so the tool
+                      // call fails validation — flashing a transient error
+                      // state and dropping the input. Inject the stored
+                      // discriminator here as a safety net, mirroring the
+                      // non-streaming path. The `code` guard keeps the
+                      // programmatic case identical to upstream, which only
+                      // rewrites inputs shaped like { code }.
                       let finalInput =
                         contentBlock.input === '' ? '{}' : contentBlock.input;
-                      if (contentBlock.providerToolName === 'code_execution') {
+                      if (contentBlock.providerToolInputType != null) {
                         try {
                           const parsed = secureJsonParse(finalInput);
                           if (
                             parsed != null &&
                             typeof parsed === 'object' &&
-                            'code' in parsed &&
-                            !('type' in parsed)
+                            !('type' in parsed) &&
+                            (contentBlock.providerToolInputType !==
+                              'programmatic-tool-call' ||
+                              'code' in parsed)
                           ) {
                             finalInput = JSON.stringify({
-                              type: 'programmatic-tool-call',
+                              type: contentBlock.providerToolInputType,
                               ...parsed,
                             });
                           }

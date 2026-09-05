@@ -16,6 +16,7 @@ import {
   validateTypes,
   type ToolNameMapping,
 } from '@ai-sdk/provider-utils';
+
 import {
   anthropicReasoningMetadataSchema,
   type AnthropicAssistantMessage,
@@ -157,6 +158,30 @@ export async function convertToAnthropicMessagesPrompt({
       title: anthropicOptions?.title,
       context: anthropicOptions?.context,
     };
+  }
+
+  async function getFileId(
+    providerMetadata: SharedV3ProviderMetadata | undefined,
+  ): Promise<string | undefined> {
+    const anthropicOptions = await parseProviderOptions({
+      provider: 'anthropic',
+      providerOptions: providerMetadata,
+      schema: anthropicFilePartProviderOptions,
+    });
+
+    return anthropicOptions?.fileId ?? undefined;
+  }
+
+  async function shouldUseContainerUpload(
+    providerMetadata: SharedV3ProviderMetadata | undefined,
+  ): Promise<boolean> {
+    const anthropicOptions = await parseProviderOptions({
+      provider: 'anthropic',
+      providerOptions: providerMetadata,
+      schema: anthropicFilePartProviderOptions,
+    });
+
+    return anthropicOptions?.asContainerUpload ?? false;
   }
 
   for (let i = 0; i < blocks.length; i++) {
@@ -309,22 +334,62 @@ export async function convertToAnthropicMessagesPrompt({
                   }
 
                   case 'file': {
+                    // Anthropic Files API: when fileId is provided via providerOptions,
+                    // use { type: 'file', file_id } source to avoid re-processing files
+                    // on every turn in a multi-turn conversation.
+                    const fileId = await getFileId(part.providerOptions);
+                    if (fileId) {
+                      betas.add('files-api-2025-04-14');
+                    }
+
+                    // Container upload: make the file available on disk in the
+                    // code execution container (for skills like docx/xlsx, and
+                    // for any file the model needs to process with code).
+                    //
+                    // Additive, not exclusive: a container upload puts the bytes
+                    // on disk but tells the model nothing about them, so for the
+                    // media types Claude reads natively we emit the native block
+                    // too. Replacing it would trade the model's ability to *see*
+                    // an attached image for its ability to open it.
+                    // Truthy rather than non-null, to stay consistent with how an
+                    // empty id is treated everywhere else in this branch: it
+                    // adds no beta header and selects no `file` source. Letting
+                    // '' through here would emit file_id: '' and, for a media
+                    // type with no native block, swallow the error below.
+                    const containerUploadFileId =
+                      fileId &&
+                      (await shouldUseContainerUpload(part.providerOptions))
+                        ? fileId
+                        : undefined;
+
+                    if (containerUploadFileId != null) {
+                      anthropicContent.push({
+                        type: 'container_upload',
+                        file_id: containerUploadFileId,
+                      });
+                    }
+
                     if (part.mediaType.startsWith('image/')) {
                       anthropicContent.push({
                         type: 'image',
-                        source: isUrlData(part.data)
+                        source: fileId
                           ? {
-                              type: 'url',
-                              url: getUrlString(part.data),
+                              type: 'file',
+                              file_id: fileId,
                             }
-                          : {
-                              type: 'base64',
-                              media_type:
-                                part.mediaType === 'image/*'
-                                  ? 'image/jpeg'
-                                  : part.mediaType,
-                              data: convertToBase64(part.data),
-                            },
+                          : isUrlData(part.data)
+                            ? {
+                                type: 'url',
+                                url: getUrlString(part.data),
+                              }
+                            : {
+                                type: 'base64',
+                                media_type:
+                                  part.mediaType === 'image/*'
+                                    ? 'image/jpeg'
+                                    : part.mediaType,
+                                data: convertToBase64(part.data),
+                              },
                         cache_control: cacheControl,
                       });
                     } else if (part.mediaType === 'application/pdf') {
@@ -340,16 +405,21 @@ export async function convertToAnthropicMessagesPrompt({
 
                       anthropicContent.push({
                         type: 'document',
-                        source: isUrlData(part.data)
+                        source: fileId
                           ? {
-                              type: 'url',
-                              url: getUrlString(part.data),
+                              type: 'file',
+                              file_id: fileId,
                             }
-                          : {
-                              type: 'base64',
-                              media_type: 'application/pdf',
-                              data: convertToBase64(part.data),
-                            },
+                          : isUrlData(part.data)
+                            ? {
+                                type: 'url',
+                                url: getUrlString(part.data),
+                              }
+                            : {
+                                type: 'base64',
+                                media_type: 'application/pdf',
+                                data: convertToBase64(part.data),
+                              },
                         title: metadata.title ?? part.filename,
                         ...(metadata.context && { context: metadata.context }),
                         ...(enableCitations && {
@@ -368,16 +438,21 @@ export async function convertToAnthropicMessagesPrompt({
 
                       anthropicContent.push({
                         type: 'document',
-                        source: isUrlData(part.data)
+                        source: fileId
                           ? {
-                              type: 'url',
-                              url: getUrlString(part.data),
+                              type: 'file',
+                              file_id: fileId,
                             }
-                          : {
-                              type: 'text',
-                              media_type: 'text/plain',
-                              data: convertToString(part.data),
-                            },
+                          : isUrlData(part.data)
+                            ? {
+                                type: 'url',
+                                url: getUrlString(part.data),
+                              }
+                            : {
+                                type: 'text',
+                                media_type: 'text/plain',
+                                data: convertToString(part.data),
+                              },
                         title: metadata.title ?? part.filename,
                         ...(metadata.context && { context: metadata.context }),
                         ...(enableCitations && {
@@ -385,7 +460,10 @@ export async function convertToAnthropicMessagesPrompt({
                         }),
                         cache_control: cacheControl,
                       });
-                    } else {
+                    } else if (containerUploadFileId == null) {
+                      // Media types Claude can't read natively are only
+                      // supportable as a container upload, where a skill parses
+                      // them off disk.
                       throw new UnsupportedFunctionalityError({
                         functionality: `media type: ${part.mediaType}`,
                       });
@@ -440,47 +518,18 @@ export async function convertToAnthropicMessagesPrompt({
                 let contentValue: AnthropicToolResultContent['content'];
                 switch (output.type) {
                   case 'content':
-                    contentValue = output.value
-                      .map(contentPart => {
-                        switch (contentPart.type) {
-                          case 'text':
-                            return {
-                              type: 'text' as const,
-                              text: contentPart.text,
-                            };
-                          case 'image-data': {
-                            return {
-                              type: 'image' as const,
-                              source: {
-                                type: 'base64' as const,
-                                media_type: contentPart.mediaType,
-                                data: contentPart.data,
-                              },
-                            };
-                          }
-                          case 'image-url': {
-                            return {
-                              type: 'image' as const,
-                              source: {
-                                type: 'url' as const,
-                                url: contentPart.url,
-                              },
-                            };
-                          }
-                          case 'file-url': {
-                            return {
-                              type: 'document' as const,
-                              source: {
-                                type: 'url' as const,
-                                url: contentPart.url,
-                              },
-                            };
-                          }
-                          case 'file-data': {
-                            if (contentPart.mediaType === 'application/pdf') {
-                              betas.add('pdfs-2024-09-25');
+                    contentValue = (
+                      await Promise.all(
+                        output.value.map(async contentPart => {
+                          switch (contentPart.type) {
+                            case 'text':
                               return {
-                                type: 'document' as const,
+                                type: 'text' as const,
+                                text: contentPart.text,
+                              };
+                            case 'image-data': {
+                              return {
+                                type: 'image' as const,
                                 source: {
                                   type: 'base64' as const,
                                   media_type: contentPart.mediaType,
@@ -488,42 +537,146 @@ export async function convertToAnthropicMessagesPrompt({
                                 },
                               };
                             }
-
-                            warnings.push({
-                              type: 'other',
-                              message: `unsupported tool content part type: ${contentPart.type} with media type: ${contentPart.mediaType}`,
-                            });
-
-                            return undefined;
-                          }
-                          case 'custom': {
-                            const anthropicOptions = contentPart.providerOptions
-                              ?.anthropic as
-                              | { type: string; toolName?: string }
-                              | undefined;
-                            if (anthropicOptions?.type === 'tool-reference') {
+                            case 'image-url': {
                               return {
-                                type: 'tool_reference' as const,
-                                tool_name: anthropicOptions.toolName!,
+                                type: 'image' as const,
+                                source: {
+                                  type: 'url' as const,
+                                  url: contentPart.url,
+                                },
                               };
                             }
-                            warnings.push({
-                              type: 'other',
-                              message: `unsupported custom tool content part`,
-                            });
-                            return undefined;
-                          }
-                          default: {
-                            warnings.push({
-                              type: 'other',
-                              message: `unsupported tool content part type: ${contentPart.type}`,
-                            });
+                            case 'file-url': {
+                              return {
+                                type: 'document' as const,
+                                source: {
+                                  type: 'url' as const,
+                                  url: contentPart.url,
+                                },
+                              };
+                            }
+                            case 'file-data': {
+                              if (contentPart.mediaType === 'application/pdf') {
+                                betas.add('pdfs-2024-09-25');
 
-                            return undefined;
+                                const enableCitations =
+                                  await shouldEnableCitations(
+                                    contentPart.providerOptions,
+                                  );
+
+                                const metadata = await getDocumentMetadata(
+                                  contentPart.providerOptions,
+                                );
+
+                                return {
+                                  type: 'document' as const,
+                                  source: {
+                                    type: 'base64' as const,
+                                    media_type: contentPart.mediaType,
+                                    data: contentPart.data,
+                                  },
+                                  ...(enableCitations && {
+                                    title:
+                                      metadata.title ??
+                                      contentPart.filename ??
+                                      'Untitled Document',
+                                    ...(metadata.context && {
+                                      context: metadata.context,
+                                    }),
+                                    citations: { enabled: true },
+                                  }),
+                                };
+                              }
+
+                              if (contentPart.mediaType === 'text/plain') {
+                                const enableCitations =
+                                  await shouldEnableCitations(
+                                    contentPart.providerOptions,
+                                  );
+
+                                const metadata = await getDocumentMetadata(
+                                  contentPart.providerOptions,
+                                );
+
+                                return {
+                                  type: 'document' as const,
+                                  source: {
+                                    type: 'text' as const,
+                                    media_type: 'text/plain' as const,
+                                    data: contentPart.data,
+                                  },
+                                  ...(enableCitations && {
+                                    title:
+                                      metadata.title ??
+                                      contentPart.filename ??
+                                      'Untitled Document',
+                                    ...(metadata.context && {
+                                      context: metadata.context,
+                                    }),
+                                    citations: { enabled: true },
+                                  }),
+                                };
+                              }
+
+                              warnings.push({
+                                type: 'other',
+                                message: `unsupported tool content part type: ${contentPart.type} with media type: ${contentPart.mediaType}`,
+                              });
+
+                              return undefined;
+                            }
+                            case 'custom': {
+                              const anthropicOptions = contentPart
+                                .providerOptions?.anthropic as
+                                | { type: 'tool-reference'; toolName?: string }
+                                | {
+                                    type: 'search-result';
+                                    source?: string;
+                                    title?: string;
+                                    content?: Array<{
+                                      type: 'text';
+                                      text: string;
+                                    }>;
+                                    citations?: { enabled: boolean };
+                                  }
+                                | undefined;
+                              if (anthropicOptions?.type === 'tool-reference') {
+                                return {
+                                  type: 'tool_reference' as const,
+                                  tool_name: anthropicOptions.toolName!,
+                                };
+                              }
+
+                              if (anthropicOptions?.type === 'search-result') {
+                                return {
+                                  type: 'search_result' as const,
+                                  source: anthropicOptions.source ?? '',
+                                  title: anthropicOptions.title ?? '',
+                                  content: anthropicOptions.content ?? [],
+                                  ...(anthropicOptions.citations && {
+                                    citations: anthropicOptions.citations,
+                                  }),
+                                };
+                              }
+
+                              warnings.push({
+                                type: 'other',
+                                message: `unsupported custom tool content part`,
+                              });
+                              return undefined;
+                            }
+                            default: {
+                              warnings.push({
+                                type: 'other',
+                                message: `unsupported tool content part type: ${contentPart.type}`,
+                              });
+
+                              return undefined;
+                            }
                           }
-                        }
-                      })
-                      .filter(isNonNullable);
+                        }),
+                      )
+                    ).filter(isNonNullable);
                     break;
                   case 'text':
                   case 'error-text':
@@ -558,6 +711,25 @@ export async function convertToAnthropicMessagesPrompt({
               const _exhaustiveCheck: never = role;
               throw new Error(`Unsupported role: ${_exhaustiveCheck}`);
             }
+          }
+
+          // Emit container_upload blocks from message providerOptions
+          // as siblings of the tool_result in the user message content
+          const containerUploads = (
+            message.providerOptions?.anthropic as
+              | {
+                  containerUploads?: Array<{ fileId: string }>;
+                }
+              | undefined
+          )?.containerUploads;
+          if (containerUploads) {
+            for (const upload of containerUploads) {
+              anthropicContent.push({
+                type: 'container_upload',
+                file_id: upload.fileId,
+              });
+            }
+            betas.add('files-api-2025-04-14');
           }
         }
 
