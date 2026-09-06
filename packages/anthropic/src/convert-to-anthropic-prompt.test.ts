@@ -5043,3 +5043,445 @@ describe('citations', () => {
     });
   });
 });
+
+describe('citable documents in tool results', () => {
+  it('should convert inline text documents with citation metadata', async () => {
+    const warnings: SharedV4Warning[] = [];
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'call-1',
+              toolName: 'search',
+              output: {
+                type: 'content',
+                value: [
+                  {
+                    type: 'file',
+                    mediaType: 'text/plain',
+                    filename: 'notes.txt',
+                    data: { type: 'text', text: 'The sky is blue.' },
+                    providerOptions: {
+                      anthropic: {
+                        citations: { enabled: true },
+                        title: 'Field Notes',
+                        context: '{"documentId":"doc-1"}',
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings,
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(warnings).toEqual([]);
+    expect(result.prompt.messages).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'call-1',
+            is_error: undefined,
+            cache_control: undefined,
+            content: [
+              {
+                type: 'document',
+                source: {
+                  type: 'text',
+                  media_type: 'text/plain',
+                  data: 'The sky is blue.',
+                },
+                title: 'Field Notes',
+                context: '{"documentId":"doc-1"}',
+                citations: { enabled: true },
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('should convert text/plain byte documents without citations to plain documents', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'call-1',
+              toolName: 'search',
+              output: {
+                type: 'content',
+                value: [
+                  {
+                    type: 'file',
+                    mediaType: 'text/plain',
+                    data: {
+                      type: 'data',
+                      data: Buffer.from('Hello from bytes').toString('base64'),
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result.prompt.messages[0].content).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'call-1',
+        is_error: undefined,
+        cache_control: undefined,
+        content: [
+          {
+            type: 'document',
+            source: {
+              type: 'text',
+              media_type: 'text/plain',
+              data: 'Hello from bytes',
+            },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('should convert PDF documents with citations enabled and default title', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'call-1',
+              toolName: 'search',
+              output: {
+                type: 'content',
+                value: [
+                  {
+                    type: 'file',
+                    mediaType: 'application/pdf',
+                    data: { type: 'data', data: 'base64pdf' },
+                    providerOptions: {
+                      anthropic: { citations: { enabled: true } },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result.betas).toEqual(new Set(['pdfs-2024-09-25']));
+    expect(result.prompt.messages[0].content).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'call-1',
+        is_error: undefined,
+        cache_control: undefined,
+        content: [
+          {
+            type: 'document',
+            source: {
+              type: 'base64',
+              media_type: 'application/pdf',
+              data: 'base64pdf',
+            },
+            title: 'Untitled Document',
+            citations: { enabled: true },
+          },
+        ],
+      },
+    ]);
+  });
+});
+
+describe('search results in tool results', () => {
+  it('should convert search-result custom parts to search_result blocks', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'call-1',
+              toolName: 'search',
+              output: {
+                type: 'content',
+                value: [
+                  {
+                    type: 'custom',
+                    providerOptions: {
+                      anthropic: {
+                        type: 'search-result',
+                        source: 'https://example.com/article',
+                        title: 'Example Article',
+                        content: [{ type: 'text', text: 'Some cited text.' }],
+                        citations: { enabled: true },
+                      },
+                    },
+                  },
+                  {
+                    type: 'custom',
+                    providerOptions: {
+                      anthropic: {
+                        type: 'search-result',
+                        source: 'doc-42',
+                        title: 'Internal Document',
+                        content: [{ type: 'text', text: 'Internal text.' }],
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result.prompt.messages[0].content).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'call-1',
+        is_error: undefined,
+        cache_control: undefined,
+        content: [
+          {
+            type: 'search_result',
+            source: 'https://example.com/article',
+            title: 'Example Article',
+            content: [{ type: 'text', text: 'Some cited text.' }],
+            citations: { enabled: true },
+          },
+          {
+            type: 'search_result',
+            source: 'doc-42',
+            title: 'Internal Document',
+            content: [{ type: 'text', text: 'Internal text.' }],
+          },
+        ],
+      },
+    ]);
+  });
+});
+
+describe('container uploads on tool messages', () => {
+  it('should emit container_upload blocks from tool message provider options as siblings of tool results', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'tool',
+          providerOptions: {
+            anthropic: {
+              containerUploads: [{ fileId: 'file-1' }, { fileId: 'file-2' }],
+            },
+          },
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'call-1',
+              toolName: 'generate_report',
+              output: { type: 'text', value: 'Report generated.' },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result.betas).toEqual(new Set(['files-api-2025-04-14']));
+    expect(result.prompt.messages[0].content).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'call-1',
+        content: 'Report generated.',
+        is_error: undefined,
+        cache_control: undefined,
+      },
+      { type: 'container_upload', file_id: 'file-1' },
+      { type: 'container_upload', file_id: 'file-2' },
+    ]);
+  });
+});
+
+describe('provider referenced documents', () => {
+  it('should include document metadata on provider referenced documents', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'file',
+              mediaType: 'text/plain',
+              data: {
+                type: 'reference',
+                reference: { anthropic: 'file-txt-1' },
+              },
+              providerOptions: {
+                anthropic: {
+                  title: 'Meeting Notes',
+                  context: 'Notes from Monday',
+                  citations: { enabled: true },
+                },
+              },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result.prompt.messages[0].content).toEqual([
+      {
+        type: 'document',
+        source: { type: 'file', file_id: 'file-txt-1' },
+        title: 'Meeting Notes',
+        context: 'Notes from Monday',
+        citations: { enabled: true },
+        cache_control: undefined,
+      },
+    ]);
+  });
+});
+
+describe('native blocks alongside container uploads', () => {
+  it('should emit a native document block alongside the container upload for PDFs', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'file',
+              mediaType: 'application/pdf',
+              filename: 'report.pdf',
+              data: {
+                type: 'reference',
+                reference: { anthropic: 'file-pdf-1' },
+              },
+              providerOptions: {
+                anthropic: {
+                  containerUpload: true,
+                  citations: { enabled: true },
+                  context: 'Quarterly report',
+                },
+              },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result.betas).toEqual(new Set(['files-api-2025-04-14']));
+    expect(result.prompt.messages[0].content).toEqual([
+      { type: 'container_upload', file_id: 'file-pdf-1' },
+      {
+        type: 'document',
+        source: { type: 'file', file_id: 'file-pdf-1' },
+        title: 'report.pdf',
+        context: 'Quarterly report',
+        citations: { enabled: true },
+        cache_control: undefined,
+      },
+    ]);
+  });
+
+  it('should emit a native image block alongside the container upload for images', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'file',
+              mediaType: 'image/png',
+              data: {
+                type: 'reference',
+                reference: { anthropic: 'file-img-1' },
+              },
+              providerOptions: { anthropic: { containerUpload: true } },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result.prompt.messages[0].content).toEqual([
+      { type: 'container_upload', file_id: 'file-img-1' },
+      {
+        type: 'image',
+        source: { type: 'file', file_id: 'file-img-1' },
+        cache_control: undefined,
+      },
+    ]);
+  });
+
+  it('should only emit the container upload for media types Claude cannot read natively', async () => {
+    const result = await convertToAnthropicPrompt({
+      prompt: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'file',
+              mediaType:
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+              data: {
+                type: 'reference',
+                reference: { anthropic: 'file-docx-1' },
+              },
+              providerOptions: { anthropic: { containerUpload: true } },
+            },
+          ],
+        },
+      ],
+      sendReasoning: true,
+      warnings: [],
+      toolNameMapping: defaultToolNameMapping,
+    });
+
+    expect(result.prompt.messages[0].content).toEqual([
+      { type: 'container_upload', file_id: 'file-docx-1' },
+    ]);
+  });
+});

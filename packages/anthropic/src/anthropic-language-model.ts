@@ -118,13 +118,20 @@ function getAnthropicStreamErrorMetadata(type: string): {
   }
 }
 
+/**
+ * A document in the request that has citations enabled. The list index
+ * corresponds to the `document_index` in document citations.
+ */
+export type CitationDocument = {
+  title: string;
+  filename?: string;
+  mediaType: string;
+  context?: string;
+};
+
 export function createCitationSource(
   citation: Citation,
-  citationDocuments: Array<{
-    title: string;
-    filename?: string;
-    mediaType: string;
-  }>,
+  citationDocuments: Array<CitationDocument>,
   generateId: () => string,
 ): LanguageModelV4Source | undefined {
   if (citation.type === 'web_search_result_location') {
@@ -138,6 +145,42 @@ export function createCitationSource(
         anthropic: {
           citedText: citation.cited_text,
           encryptedIndex: citation.encrypted_index,
+        },
+      } satisfies SharedV4ProviderMetadata,
+    };
+  }
+
+  // Search result citations (from `search_result` blocks in tool results).
+  // `source` is either a URL or an opaque identifier such as a document id.
+  if (citation.type === 'search_result_location') {
+    const isUrl = /^https?:\/\//i.test(citation.source);
+
+    if (isUrl) {
+      return {
+        type: 'source' as const,
+        sourceType: 'url' as const,
+        id: generateId(),
+        url: citation.source,
+        title: citation.title ?? undefined,
+        providerMetadata: {
+          anthropic: {
+            citedText: citation.cited_text,
+          },
+        } satisfies SharedV4ProviderMetadata,
+      };
+    }
+
+    return {
+      type: 'source' as const,
+      sourceType: 'document' as const,
+      id: generateId(),
+      mediaType: 'text/plain',
+      title: citation.title ?? 'Search Result',
+      providerMetadata: {
+        anthropic: {
+          citedText: citation.cited_text,
+          // the identifier of the search result, e.g. a document id
+          context: citation.source,
         },
       } satisfies SharedV4ProviderMetadata,
     };
@@ -161,8 +204,8 @@ export function createCitationSource(
     title: citation.document_title ?? documentInfo.title,
     filename: documentInfo.filename,
     providerMetadata: {
-      anthropic:
-        citation.type === 'page_location'
+      anthropic: {
+        ...(citation.type === 'page_location'
           ? {
               citedText: citation.cited_text,
               startPageNumber: citation.start_page_number,
@@ -172,7 +215,11 @@ export function createCitationSource(
               citedText: citation.cited_text,
               startCharIndex: citation.start_char_index,
               endCharIndex: citation.end_char_index,
-            },
+            }),
+        ...(documentInfo.context != null && {
+          context: documentInfo.context,
+        }),
+      },
     } satisfies SharedV4ProviderMetadata,
   };
 }
@@ -975,16 +1022,34 @@ export class AnthropicLanguageModel implements LanguageModelV4 {
     return this.config.transformRequestBody?.(args, betas) ?? args;
   }
 
-  private extractCitationDocuments(prompt: LanguageModelV4Prompt): Array<{
-    title: string;
-    filename?: string;
-    mediaType: string;
-  }> {
+  /**
+   * Collects the documents with citations enabled in the order they appear
+   * in the request, so that the `document_index` of a citation can be
+   * resolved. Documents can be user file parts or file parts inside tool
+   * result content.
+   */
+  private extractCitationDocuments(
+    prompt: LanguageModelV4Prompt,
+  ): Array<CitationDocument> {
+    type CitationFilePart = {
+      type: 'file';
+      mediaType: string;
+      filename?: string;
+      providerOptions?: {
+        anthropic?: {
+          citations?: { enabled?: boolean };
+          title?: string;
+          context?: string;
+        };
+      };
+    };
+
     const isCitationPart = (part: {
       type: string;
       mediaType?: string;
+      filename?: string;
       providerOptions?: { anthropic?: { citations?: { enabled?: boolean } } };
-    }) => {
+    }): part is CitationFilePart => {
       if (part.type !== 'file') {
         return false;
       }
@@ -1003,19 +1068,34 @@ export class AnthropicLanguageModel implements LanguageModelV4 {
       return citationsConfig?.enabled ?? false;
     };
 
+    const toCitationDocument = (part: CitationFilePart): CitationDocument => {
+      const anthropic = part.providerOptions?.anthropic;
+      return {
+        title: anthropic?.title ?? part.filename ?? 'Untitled Document',
+        filename: part.filename,
+        mediaType: part.mediaType,
+        context: anthropic?.context,
+      };
+    };
+
     return prompt
-      .filter(message => message.role === 'user')
-      .flatMap(message => message.content)
-      .filter(isCitationPart)
-      .map(part => {
-        // TypeScript knows this is a file part due to our filter
-        const filePart = part as Extract<typeof part, { type: 'file' }>;
-        return {
-          title: filePart.filename ?? 'Untitled Document',
-          filename: filePart.filename,
-          mediaType: filePart.mediaType,
-        };
-      });
+      .flatMap(message => {
+        switch (message.role) {
+          case 'user':
+            return message.content;
+          case 'tool':
+            return message.content
+              .filter(part => part.type === 'tool-result')
+              .map(part => part.output)
+              .filter(output => output.type === 'content')
+              .flatMap(output => output.value);
+          default:
+            return [];
+        }
+      })
+      .flatMap(part =>
+        isCitationPart(part) ? [toCitationDocument(part)] : [],
+      );
   }
 
   async doGenerate(
@@ -2326,21 +2406,32 @@ export class AnthropicLanguageModel implements LanguageModelV4 {
                         id: contentBlock.toolCallId,
                       });
 
-                      // For code_execution, inject 'programmatic-tool-call' type
-                      // when input has { code } format (programmatic tool calling)
+                      // The code_execution input schemas are discriminated on a
+                      // `type` field that the streamed events don't include.
+                      // The delta handler injects providerToolInputType into
+                      // the first input delta, but when Anthropic delivers the
+                      // full input in the initial server_tool_use block (no
+                      // deltas follow) that injection never runs, so the tool
+                      // call fails validation and the input is dropped. Inject
+                      // the stored discriminator here as a safety net, mirroring
+                      // the non-streaming path. The `code` guard keeps the
+                      // programmatic tool calling case limited to inputs shaped
+                      // like { code }.
                       let finalInput =
                         contentBlock.input === '' ? '{}' : contentBlock.input;
-                      if (contentBlock.providerToolName === 'code_execution') {
+                      if (contentBlock.providerToolInputType != null) {
                         try {
                           const parsed = secureJsonParse(finalInput);
                           if (
                             parsed != null &&
                             typeof parsed === 'object' &&
-                            'code' in parsed &&
-                            !('type' in parsed)
+                            !('type' in parsed) &&
+                            (contentBlock.providerToolInputType !==
+                              'programmatic-tool-call' ||
+                              'code' in parsed)
                           ) {
                             finalInput = JSON.stringify({
-                              type: 'programmatic-tool-call',
+                              type: contentBlock.providerToolInputType,
                               ...parsed,
                             });
                           }

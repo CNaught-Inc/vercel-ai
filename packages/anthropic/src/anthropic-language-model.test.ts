@@ -11893,3 +11893,439 @@ describe('claude-opus-4-7 specific behavior', () => {
     );
   });
 });
+
+describe('citations from documents in tool results', () => {
+  const server = createTestServer({
+    'https://api.anthropic.com/v1/messages': {},
+  });
+
+  function createModel() {
+    return createAnthropic({
+      apiKey: 'test-api-key',
+      generateId: mockId({ prefix: 'cite' }),
+    })('claude-3-haiku-20240307');
+  }
+
+  function prepareCitationResponse(citations: unknown[]) {
+    server.urls['https://api.anthropic.com/v1/messages'].response = {
+      type: 'json-value',
+      body: {
+        id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Cited answer.', citations }],
+        model: 'claude-3-haiku-20240307',
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: { input_tokens: 4, output_tokens: 30 },
+      },
+    };
+  }
+
+  it('should resolve document citations against documents in tool results', async () => {
+    prepareCitationResponse([
+      {
+        type: 'char_location',
+        cited_text: 'The sky is blue.',
+        document_index: 0,
+        document_title: null,
+        start_char_index: 0,
+        end_char_index: 16,
+      },
+    ]);
+
+    const result = await createModel().doGenerate({
+      prompt: [
+        {
+          role: 'user',
+          content: [{ type: 'text', text: 'Search the notes.' }],
+        },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'call-1',
+              toolName: 'search',
+              input: '{}',
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'call-1',
+              toolName: 'search',
+              output: {
+                type: 'content',
+                value: [
+                  {
+                    type: 'file',
+                    mediaType: 'text/plain',
+                    filename: 'notes.txt',
+                    data: { type: 'text', text: 'The sky is blue.' },
+                    providerOptions: {
+                      anthropic: {
+                        citations: { enabled: true },
+                        title: 'Field Notes',
+                        context: 'doc-1',
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(result.content).toEqual([
+      { type: 'text', text: 'Cited answer.' },
+      {
+        type: 'source',
+        sourceType: 'document',
+        id: 'cite-0',
+        mediaType: 'text/plain',
+        title: 'Field Notes',
+        filename: 'notes.txt',
+        providerMetadata: {
+          anthropic: {
+            citedText: 'The sky is blue.',
+            startCharIndex: 0,
+            endCharIndex: 16,
+            context: 'doc-1',
+          },
+        },
+      },
+    ]);
+  });
+
+  it('should index citation documents in prompt order across user and tool messages', async () => {
+    prepareCitationResponse([
+      {
+        type: 'page_location',
+        cited_text: 'From the tool document',
+        document_index: 1,
+        document_title: null,
+        start_page_number: 2,
+        end_page_number: 2,
+      },
+      {
+        type: 'char_location',
+        cited_text: 'From the user document',
+        document_index: 0,
+        document_title: null,
+        start_char_index: 5,
+        end_char_index: 10,
+      },
+    ]);
+
+    const result = await createModel().doGenerate({
+      prompt: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'file',
+              mediaType: 'text/plain',
+              filename: 'user.txt',
+              data: { type: 'text', text: 'User document text' },
+              providerOptions: { anthropic: { citations: { enabled: true } } },
+            },
+            { type: 'text', text: 'Compare with the report.' },
+          ],
+        },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'call-1',
+              toolName: 'fetch_report',
+              input: '{}',
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'call-1',
+              toolName: 'fetch_report',
+              output: {
+                type: 'content',
+                value: [
+                  {
+                    type: 'file',
+                    mediaType: 'application/pdf',
+                    filename: 'report.pdf',
+                    data: { type: 'data', data: 'base64pdf' },
+                    providerOptions: {
+                      anthropic: { citations: { enabled: true } },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    const sources = result.content.filter(part => part.type === 'source');
+    expect(sources).toEqual([
+      expect.objectContaining({
+        sourceType: 'document',
+        mediaType: 'application/pdf',
+        filename: 'report.pdf',
+        title: 'report.pdf',
+        providerMetadata: {
+          anthropic: {
+            citedText: 'From the tool document',
+            startPageNumber: 2,
+            endPageNumber: 2,
+          },
+        },
+      }),
+      expect.objectContaining({
+        sourceType: 'document',
+        mediaType: 'text/plain',
+        filename: 'user.txt',
+        title: 'user.txt',
+        providerMetadata: {
+          anthropic: {
+            citedText: 'From the user document',
+            startCharIndex: 5,
+            endCharIndex: 10,
+          },
+        },
+      }),
+    ]);
+  });
+});
+
+describe('search result citations', () => {
+  const server = createTestServer({
+    'https://api.anthropic.com/v1/messages': {},
+  });
+
+  function createModel() {
+    return createAnthropic({
+      apiKey: 'test-api-key',
+      generateId: mockId({ prefix: 'cite' }),
+    })('claude-3-haiku-20240307');
+  }
+
+  it('should map search result citations to url and document sources', async () => {
+    server.urls['https://api.anthropic.com/v1/messages'].response = {
+      type: 'json-value',
+      body: {
+        id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        content: [
+          {
+            type: 'text',
+            text: 'Cited answer.',
+            citations: [
+              {
+                type: 'search_result_location',
+                cited_text: 'Cited from the web',
+                search_result_index: 0,
+                source: 'https://example.com/article',
+                title: 'Example Article',
+                start_block_index: 0,
+                end_block_index: 0,
+              },
+              {
+                type: 'search_result_location',
+                cited_text: 'Cited from an internal document',
+                search_result_index: 1,
+                source: 'doc-42',
+                title: null,
+                start_block_index: 0,
+                end_block_index: 1,
+              },
+            ],
+          },
+        ],
+        model: 'claude-3-haiku-20240307',
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: { input_tokens: 4, output_tokens: 30 },
+      },
+    };
+
+    const result = await createModel().doGenerate({ prompt: TEST_PROMPT });
+
+    expect(result.content.filter(part => part.type === 'source')).toEqual([
+      {
+        type: 'source',
+        sourceType: 'url',
+        id: 'cite-0',
+        url: 'https://example.com/article',
+        title: 'Example Article',
+        providerMetadata: {
+          anthropic: { citedText: 'Cited from the web' },
+        },
+      },
+      {
+        type: 'source',
+        sourceType: 'document',
+        id: 'cite-1',
+        mediaType: 'text/plain',
+        title: 'Search Result',
+        providerMetadata: {
+          anthropic: {
+            citedText: 'Cited from an internal document',
+            context: 'doc-42',
+          },
+        },
+      },
+    ]);
+  });
+
+  it('should emit search result citation sources in streaming', async () => {
+    server.urls['https://api.anthropic.com/v1/messages'].response = {
+      type: 'stream-chunks',
+      chunks: [
+        `data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-3-haiku-20240307","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":17,"output_tokens":1}}}\n\n`,
+        `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n`,
+        `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Cited answer."}}\n\n`,
+        `data: {"type":"content_block_delta","index":0,"delta":{"type":"citations_delta","citation":{"type":"search_result_location","cited_text":"Cited from the web","search_result_index":0,"source":"https://example.com/article","title":"Example Article","start_block_index":0,"end_block_index":0}}}\n\n`,
+        `data: {"type":"content_block_stop","index":0}\n\n`,
+        `data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5}}\n\n`,
+        `data: {"type":"message_stop"}\n\n`,
+      ],
+    };
+
+    const { stream } = await createModel().doStream({ prompt: TEST_PROMPT });
+    const chunks = await convertReadableStreamToArray(stream);
+
+    expect(chunks.filter(chunk => chunk.type === 'source')).toEqual([
+      {
+        type: 'source',
+        sourceType: 'url',
+        id: 'cite-0',
+        url: 'https://example.com/article',
+        title: 'Example Article',
+        providerMetadata: {
+          anthropic: { citedText: 'Cited from the web' },
+        },
+      },
+    ]);
+  });
+});
+
+describe('code execution input type injection in streaming', () => {
+  const server = createTestServer({
+    'https://api.anthropic.com/v1/messages': {},
+  });
+
+  function prepareServerToolUseStream(contentBlock: Record<string, unknown>) {
+    server.urls['https://api.anthropic.com/v1/messages'].response = {
+      type: 'stream-chunks',
+      chunks: [
+        `data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-5","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":17,"output_tokens":1}}}\n\n`,
+        `data: ${JSON.stringify({
+          type: 'content_block_start',
+          index: 0,
+          content_block: contentBlock,
+        })}\n\n`,
+        `data: {"type":"content_block_stop","index":0}\n\n`,
+        `data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5}}\n\n`,
+        `data: {"type":"message_stop"}\n\n`,
+      ],
+    };
+  }
+
+  async function streamToolCalls() {
+    const { stream } = await createAnthropic({ apiKey: 'test-api-key' })(
+      'claude-sonnet-4-5',
+    ).doStream({ prompt: TEST_PROMPT });
+    const chunks = await convertReadableStreamToArray(stream);
+    return chunks.filter(chunk => chunk.type === 'tool-call');
+  }
+
+  it('should inject the input type when the full text editor input arrives without deltas', async () => {
+    prepareServerToolUseStream({
+      type: 'server_tool_use',
+      id: 'srvtoolu_1',
+      name: 'text_editor_code_execution',
+      input: { command: 'view', path: '/tmp/data.csv' },
+    });
+
+    const toolCalls = await streamToolCalls();
+
+    expect(toolCalls).toHaveLength(1);
+    expect(toolCalls[0]).toMatchObject({
+      toolCallId: 'srvtoolu_1',
+      toolName: 'code_execution',
+      providerExecuted: true,
+    });
+    expect(JSON.parse(toolCalls[0].input)).toEqual({
+      type: 'text_editor_code_execution',
+      command: 'view',
+      path: '/tmp/data.csv',
+    });
+  });
+
+  it('should inject the input type when the full bash input arrives without deltas', async () => {
+    prepareServerToolUseStream({
+      type: 'server_tool_use',
+      id: 'srvtoolu_2',
+      name: 'bash_code_execution',
+      input: { command: 'ls -la' },
+    });
+
+    const toolCalls = await streamToolCalls();
+
+    expect(JSON.parse(toolCalls[0].input)).toEqual({
+      type: 'bash_code_execution',
+      command: 'ls -la',
+    });
+  });
+
+  it('should only inject programmatic-tool-call for inputs shaped like { code }', async () => {
+    prepareServerToolUseStream({
+      type: 'server_tool_use',
+      id: 'srvtoolu_3',
+      name: 'code_execution',
+      input: { code: 'print(1)' },
+    });
+
+    expect(JSON.parse((await streamToolCalls())[0].input)).toEqual({
+      type: 'programmatic-tool-call',
+      code: 'print(1)',
+    });
+
+    prepareServerToolUseStream({
+      type: 'server_tool_use',
+      id: 'srvtoolu_4',
+      name: 'code_execution',
+      input: { command: 'view', path: '/tmp/x' },
+    });
+
+    expect(JSON.parse((await streamToolCalls())[0].input)).toEqual({
+      command: 'view',
+      path: '/tmp/x',
+    });
+  });
+
+  it('should not alter inputs of tools without an input type discriminator', async () => {
+    prepareServerToolUseStream({
+      type: 'server_tool_use',
+      id: 'srvtoolu_5',
+      name: 'web_fetch',
+      input: { url: 'https://example.com' },
+    });
+
+    expect(JSON.parse((await streamToolCalls())[0].input)).toEqual({
+      url: 'https://example.com',
+    });
+  });
+});

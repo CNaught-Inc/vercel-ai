@@ -225,6 +225,20 @@ export interface AnthropicToolReferenceContent {
   tool_name: string;
 }
 
+/**
+ * Search result content block nested inside a tool result. Used for
+ * RAG-style tool outputs so that the model can cite individual results.
+ * `source` is a URL or a unique identifier (e.g. a document id).
+ */
+export interface AnthropicNestedSearchResultContent {
+  type: 'search_result';
+  source: string;
+  title: string;
+  content: Array<{ type: 'text'; text: string }>;
+  citations?: { enabled: boolean };
+  cache_control?: never;
+}
+
 export interface AnthropicToolResultContent {
   type: 'tool_result';
   tool_use_id: string;
@@ -234,6 +248,7 @@ export interface AnthropicToolResultContent {
         | AnthropicNestedTextContent
         | AnthropicNestedImageContent
         | AnthropicNestedDocumentContent
+        | AnthropicNestedSearchResultContent
         | AnthropicToolReferenceContent
       >;
   is_error: boolean | undefined;
