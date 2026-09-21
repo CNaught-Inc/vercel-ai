@@ -9,11 +9,14 @@ import {
   createJsonResponseHandler,
   lazySchema,
   postFormDataToApi,
+  resolve,
+  type Resolvable,
   zodSchema,
   type FetchFunction,
 } from '@ai-sdk/provider-utils';
 import { z } from 'zod/v4';
 import { anthropicFailedResponseHandler } from './anthropic-error';
+import { mergeAnthropicBetas } from './merge-anthropic-betas';
 
 const anthropicUploadFileResponseSchema = lazySchema(() =>
   zodSchema(
@@ -32,7 +35,7 @@ const anthropicUploadFileResponseSchema = lazySchema(() =>
 interface AnthropicFilesConfig {
   provider: string;
   baseURL: string;
-  headers: () => Record<string, string | undefined>;
+  headers: Resolvable<Record<string, string | undefined>>;
   fetch?: FetchFunction;
 }
 
@@ -44,6 +47,27 @@ export class AnthropicFiles implements FilesV4 {
   }
 
   constructor(private readonly config: AnthropicFilesConfig) {}
+
+  /**
+   * Adds the files beta to the provider's betas (e.g. the OAuth beta under
+   * federation) rather than replacing them.
+   */
+  private async getHeaders(
+    headers: Record<string, string | undefined> | undefined,
+  ): Promise<Record<string, string | undefined>> {
+    const configHeaders = await resolve(this.config.headers);
+
+    return combineHeaders(
+      configHeaders,
+      {
+        'anthropic-beta': mergeAnthropicBetas(
+          configHeaders['anthropic-beta'],
+          'files-api-2025-04-14',
+        ),
+      },
+      headers,
+    );
+  }
 
   async uploadFile({
     data,
@@ -65,11 +89,7 @@ export class AnthropicFiles implements FilesV4 {
 
     const { value: response } = await postFormDataToApi({
       url: `${this.config.baseURL}/files`,
-      headers: combineHeaders(
-        this.config.headers(),
-        { 'anthropic-beta': 'files-api-2025-04-14' },
-        headers,
-      ),
+      headers: await this.getHeaders(headers),
       formData,
       failedResponseHandler: anthropicFailedResponseHandler,
       successfulResponseHandler: createJsonResponseHandler(
