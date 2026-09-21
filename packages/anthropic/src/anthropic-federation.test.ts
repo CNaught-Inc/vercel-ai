@@ -323,6 +323,66 @@ describe('workload identity federation', () => {
       );
     });
 
+    it('serves the cached token when a refresh fails before it expires', async () => {
+      vi.useFakeTimers();
+      let exchanges = 0;
+      const fetchMock = createFetchMock({
+        token: () =>
+          ++exchanges === 2
+            ? new Response('unavailable', { status: 503 })
+            : tokenResponse({ accessToken: `token-${exchanges}` }),
+      });
+      const provider = new AnthropicFederationTokenProvider({
+        settings: {
+          federationRuleId: 'fdrl_123',
+          organizationId: 'org_123',
+          identityToken: 'identity.jwt',
+        },
+        baseURL: 'https://api.anthropic.com/v1',
+        fetch: fetchMock,
+        userAgent: 'test',
+      });
+
+      expect(await provider.getToken()).toBe('token-1');
+
+      // inside the refresh window: the failed refresh falls back to the cached token
+      vi.advanceTimersByTime(59 * 60 * 1000);
+      expect(await provider.getToken()).toBe('token-1');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      // the next call retries the exchange
+      expect(await provider.getToken()).toBe('token-3');
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('rethrows a failed refresh once the cached token has expired', async () => {
+      vi.useFakeTimers();
+      let exchanges = 0;
+      const fetchMock = createFetchMock({
+        token: () =>
+          ++exchanges === 1
+            ? tokenResponse()
+            : new Response('unavailable', { status: 503 }),
+      });
+      const provider = new AnthropicFederationTokenProvider({
+        settings: {
+          federationRuleId: 'fdrl_123',
+          organizationId: 'org_123',
+          identityToken: 'identity.jwt',
+        },
+        baseURL: 'https://api.anthropic.com/v1',
+        fetch: fetchMock,
+        userAgent: 'test',
+      });
+
+      expect(await provider.getToken()).toBe('access-token');
+
+      vi.advanceTimersByTime(61 * 60 * 1000);
+      await expect(provider.getToken()).rejects.toThrow(
+        AnthropicFederationError,
+      );
+    });
+
     it('does not cache a failed exchange', async () => {
       let attempts = 0;
       const fetchMock = createFetchMock({
@@ -665,6 +725,96 @@ describe('workload identity federation', () => {
       );
       expect((messagesCalls[1]![1] as RequestInit).body).toBe(
         (messagesCalls[0]![1] as RequestInit).body,
+      );
+    });
+
+    it('cancels the rejected response body before retrying', async () => {
+      const rejected = unauthorizedResponse();
+      let apiCalls = 0;
+      const fetchMock = createFetchMock({
+        api: () => (++apiCalls === 1 ? rejected : messageResponse()),
+      });
+      const provider = createAnthropic({ federation, fetch: fetchMock });
+
+      await provider('claude-3-haiku-20240307').doGenerate({
+        prompt: TEST_PROMPT,
+      });
+
+      expect(rejected.bodyUsed).toBe(true);
+    });
+
+    it('keeps the OAuth beta on skills uploads', async () => {
+      const fetchMock = createFetchMock({
+        api: () =>
+          new Response(
+            JSON.stringify({
+              id: 'skill_123',
+              type: 'skill',
+              created_at: '2025-01-01T00:00:00Z',
+              display_title: 'test',
+              latest_version: '1',
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+      });
+      const provider = createAnthropic({ federation, fetch: fetchMock });
+
+      try {
+        await provider.skills().uploadSkill({
+          files: [
+            { path: 'SKILL.md', data: { type: 'data', data: 'IyBUZXN0' } },
+          ],
+        });
+      } catch {
+        // only the request headers matter here
+      }
+
+      const [uploadCall] = callsTo(
+        fetchMock,
+        'https://api.anthropic.com/v1/skills',
+      );
+      const headers = headersOf(uploadCall!);
+      expect(headers.get('authorization')).toBe('Bearer access-token');
+      expect(headers.get('anthropic-beta')?.split(',')).toEqual(
+        expect.arrayContaining(['oauth-2025-04-20', 'skills-2025-10-02']),
+      );
+    });
+
+    it('keeps the OAuth beta when starting a batch', async () => {
+      const fetchMock = createFetchMock({
+        api: () =>
+          new Response(
+            JSON.stringify({
+              id: 'msgbatch_123',
+              type: 'message_batch',
+              processing_status: 'in_progress',
+              request_counts: {
+                processing: 1,
+                succeeded: 0,
+                errored: 0,
+                canceled: 0,
+                expired: 0,
+              },
+              created_at: '2025-01-01T00:00:00Z',
+              expires_at: '2025-01-02T00:00:00Z',
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+      });
+      const provider = createAnthropic({ federation, fetch: fetchMock });
+
+      await provider('claude-3-haiku-20240307').experimental_doStartBatch({
+        requests: [{ id: 'req_1', options: { prompt: TEST_PROMPT } }],
+      });
+
+      const [startCall] = callsTo(
+        fetchMock,
+        'https://api.anthropic.com/v1/messages/batches',
+      );
+      const headers = headersOf(startCall!);
+      expect(headers.get('authorization')).toBe('Bearer access-token');
+      expect(headers.get('anthropic-beta')?.split(',')).toEqual(
+        expect.arrayContaining(['oauth-2025-04-20']),
       );
     });
 

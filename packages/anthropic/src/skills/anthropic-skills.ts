@@ -10,6 +10,7 @@ import {
   type Resolvable,
 } from '@ai-sdk/provider-utils';
 import { anthropicFailedResponseHandler } from '../anthropic-error';
+import { mergeAnthropicBetas } from '../merge-anthropic-betas';
 import {
   anthropicSkillResponseSchema,
   anthropicSkillVersionResponseSchema,
@@ -42,9 +43,18 @@ export class AnthropicSkills implements SkillsV4 {
 
   constructor(private readonly config: AnthropicSkillsConfig) {}
 
+  /**
+   * Adds the skills beta to the provider's betas (e.g. the OAuth beta under
+   * federation) rather than replacing them.
+   */
   private async getHeaders(): Promise<Record<string, string | undefined>> {
-    return combineHeaders(await resolve(this.config.headers), {
-      'anthropic-beta': 'skills-2025-10-02',
+    const configHeaders = await resolve(this.config.headers);
+
+    return combineHeaders(configHeaders, {
+      'anthropic-beta': mergeAnthropicBetas(
+        configHeaders['anthropic-beta'],
+        'skills-2025-10-02',
+      ),
     });
   }
 

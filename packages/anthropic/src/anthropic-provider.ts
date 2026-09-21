@@ -27,25 +27,12 @@ import { AnthropicFiles } from './anthropic-files';
 import { AnthropicMessagesBatchLanguageModel } from './anthropic-messages-batch';
 import type { AnthropicModelId } from './anthropic-language-model-options';
 import { anthropicTools } from './anthropic-tools';
+import { mergeAnthropicBetas } from './merge-anthropic-betas';
 import { AnthropicSkills } from './skills/anthropic-skills';
 import { VERSION } from './version';
 
 const ANTHROPIC_API_URL = 'https://api.anthropic.com';
 const ANTHROPIC_API_VERSIONED_URL = `${ANTHROPIC_API_URL}/v1`;
-
-/**
- * Combines `anthropic-beta` header values, dropping duplicates and blanks.
- */
-function joinBetas(...values: Array<string | undefined>): string | undefined {
-  const betas = new Set(
-    values
-      .flatMap(value => value?.split(',') ?? [])
-      .map(beta => beta.trim())
-      .filter(beta => beta !== ''),
-  );
-
-  return betas.size > 0 ? Array.from(betas).join(',') : undefined;
-}
 
 function normalizeBaseURL(baseURL: string | undefined): string | undefined {
   const baseURLWithoutTrailingSlash = withoutTrailingSlash(
@@ -235,7 +222,7 @@ export function createAnthropic(
         'anthropic-version': '2023-06-01',
         ...authHeaders,
         ...customHeaders,
-        'anthropic-beta': joinBetas(
+        'anthropic-beta': mergeAnthropicBetas(
           authHeaders['anthropic-beta'],
           customHeaders['anthropic-beta'],
         ),
