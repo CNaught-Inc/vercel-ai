@@ -236,10 +236,16 @@ describe('Anthropic Messages batch language model', () => {
     const betas = server.calls[0].requestHeaders['anthropic-beta']
       .split(',')
       .map(beta => beta.trim());
+    // provider-level header betas are kept; the per-operation header beta is
+    // replaced by the batch betas
     expect(betas).toEqual(
-      expect.arrayContaining(['batch-beta', 'server-side-fallback-2026-06-01']),
+      expect.arrayContaining([
+        'provider-header-beta',
+        'batch-beta',
+        'server-side-fallback-2026-06-01',
+      ]),
     );
-    expect(betas).toHaveLength(2);
+    expect(betas).toHaveLength(3);
     expect(new Set(betas).size).toBe(betas.length);
   });
 

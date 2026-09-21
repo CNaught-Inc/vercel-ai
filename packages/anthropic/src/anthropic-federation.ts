@@ -163,6 +163,7 @@ interface AccessToken {
  * - the first `getToken` call exchanges and caches
  * - later calls return the cached token until it is close to expiry
  * - concurrent callers share one in-flight exchange
+ * - a failed refresh keeps serving the cached token until it has expired
  * - `invalidate` drops the cached token, e.g. after the API rejected it
  */
 export class AnthropicFederationTokenProvider {
@@ -204,7 +205,17 @@ export class AnthropicFederationTokenProvider {
       );
     }
 
-    return (await this.pending).token;
+    try {
+      return (await this.pending).token;
+    } catch (error) {
+      // A failed proactive refresh should not fail requests the still-valid
+      // cached token could serve; the next call inside the refresh window
+      // tries the exchange again.
+      if (this.cached != null && this.cached.expiresAt > Date.now()) {
+        return this.cached.token;
+      }
+      throw error;
+    }
   }
 
   invalidate(): void {
@@ -421,6 +432,8 @@ export function withFederationRetry({
       return response;
     }
 
+    // Release the rejected response's connection before replaying the request.
+    await response.body?.cancel();
     tokenProvider.invalidate();
     const token = await tokenProvider.getToken();
 
