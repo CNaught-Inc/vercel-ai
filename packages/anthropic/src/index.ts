@@ -9,6 +9,10 @@ export type {
   AnthropicSystemMessageProviderOptions,
 } from './anthropic-language-model-options';
 export type { AnthropicToolOptions } from './anthropic-prepare-tools';
+export {
+  AnthropicFederationError,
+  type AnthropicFederationSettings,
+} from './anthropic-federation';
 export { anthropic, createAnthropic } from './anthropic-provider';
 export type {
   AnthropicProvider,
