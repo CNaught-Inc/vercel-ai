@@ -58,6 +58,7 @@ import type {
 } from './anthropic-message-metadata';
 import { convertAnthropicUsage } from './convert-anthropic-usage';
 import { mapAnthropicStopReason } from './map-anthropic-stop-reason';
+import { mergeAnthropicBetas } from './merge-anthropic-betas';
 
 const anthropicBatchRequestIdPattern = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -449,6 +450,10 @@ export class AnthropicBatch implements BatchV4<{
     return `${this.options.config.baseURL}/messages/batches${path}`;
   }
 
+  /**
+   * The batch betas replace any per-operation `anthropic-beta` header, but
+   * the provider's own betas (e.g. the OAuth beta under federation) are kept.
+   */
   private async getStartBatchHeaders({
     betas,
     headers,
@@ -456,11 +461,17 @@ export class AnthropicBatch implements BatchV4<{
     betas: Set<string>;
     headers: Record<string, string | undefined> | undefined;
   }) {
+    const configHeaders = this.options.config.headers
+      ? normalizeHeaders(await resolve(this.options.config.headers))
+      : undefined;
+
     return combineHeaders(
       normalizeHeaders(await this.getBatchHeaders(headers)),
       {
-        'anthropic-beta':
-          betas.size > 0 ? Array.from(betas).join(',') : undefined,
+        'anthropic-beta': mergeAnthropicBetas(
+          configHeaders?.['anthropic-beta'],
+          Array.from(betas).join(','),
+        ),
       },
     );
   }

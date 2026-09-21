@@ -16,6 +16,7 @@ import {
 } from '@ai-sdk/provider-utils';
 import { z } from 'zod/v4';
 import { anthropicFailedResponseHandler } from './anthropic-error';
+import { mergeAnthropicBetas } from './merge-anthropic-betas';
 
 const anthropicUploadFileResponseSchema = lazySchema(() =>
   zodSchema(
@@ -55,14 +56,14 @@ export class AnthropicFiles implements FilesV4 {
     headers: Record<string, string | undefined> | undefined,
   ): Promise<Record<string, string | undefined>> {
     const configHeaders = await resolve(this.config.headers);
-    const configBetas = configHeaders['anthropic-beta'];
 
     return combineHeaders(
       configHeaders,
       {
-        'anthropic-beta': configBetas
-          ? `${configBetas},files-api-2025-04-14`
-          : 'files-api-2025-04-14',
+        'anthropic-beta': mergeAnthropicBetas(
+          configHeaders['anthropic-beta'],
+          'files-api-2025-04-14',
+        ),
       },
       headers,
     );
