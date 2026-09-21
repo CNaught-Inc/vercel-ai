@@ -12,12 +12,20 @@ import {
   generateId,
   loadApiKey,
   loadOptionalSetting,
+  normalizeHeaders,
   validateBaseURL,
   withoutTrailingSlash,
   withUserAgentSuffix,
   type FetchFunction,
 } from '@ai-sdk/provider-utils';
 import { Experimental_EvaluationLanguageModel as EvaluationLanguageModel } from '@ai-sdk/provider-utils/experimental-evaluation';
+import {
+  ANTHROPIC_OAUTH_BETA,
+  AnthropicFederationTokenProvider,
+  hasFederationEnvironment,
+  withFederationRetry,
+  type AnthropicFederationSettings,
+} from './anthropic-federation';
 import { AnthropicFiles } from './anthropic-files';
 import { AnthropicLanguageModel } from './anthropic-language-model';
 import { AnthropicBatch } from './anthropic-batch';
@@ -28,6 +36,20 @@ import { VERSION } from './version';
 
 const ANTHROPIC_API_URL = 'https://api.anthropic.com';
 const ANTHROPIC_API_VERSIONED_URL = `${ANTHROPIC_API_URL}/v1`;
+
+/**
+ * Combines `anthropic-beta` header values, dropping duplicates and blanks.
+ */
+function joinBetas(...values: Array<string | undefined>): string | undefined {
+  const betas = new Set(
+    values
+      .flatMap(value => value?.split(',') ?? [])
+      .map(beta => beta.trim())
+      .filter(beta => beta !== ''),
+  );
+
+  return betas.size > 0 ? Array.from(betas).join(',') : undefined;
+}
 
 function normalizeBaseURL(baseURL: string | undefined): string | undefined {
   const baseURLWithoutTrailingSlash = withoutTrailingSlash(
@@ -99,6 +121,18 @@ export interface AnthropicProviderSettings {
   authToken?: string;
 
   /**
+   * Authenticate with Workload Identity Federation instead of a static
+   * credential: the workload's OIDC identity token is exchanged for a
+   * short-lived Anthropic access token, which is cached and refreshed
+   * ahead of expiry and sent using the `Authorization: Bearer` header.
+   *
+   * Federation is also used when neither `apiKey` nor `authToken` is set,
+   * `ANTHROPIC_API_KEY` is unset, and the `ANTHROPIC_FEDERATION_RULE_ID`
+   * and `ANTHROPIC_ORGANIZATION_ID` environment variables are set.
+   */
+  federation?: AnthropicFederationSettings;
+
+  /**
    * Custom headers to include in the requests.
    */
   headers?: Record<string, string>;
@@ -147,8 +181,54 @@ export function createAnthropic(
     });
   }
 
-  const getHeaders = () => {
-    const authHeaders: Record<string, string> = options.authToken
+  if (options.federation != null && (options.apiKey || options.authToken)) {
+    throw new InvalidArgumentError({
+      argument: 'federation',
+      message:
+        'federation cannot be combined with apiKey or authToken. Please use only one authentication method.',
+    });
+  }
+
+  const userAgent = `ai-sdk/anthropic/${VERSION}`;
+
+  // An explicit credential wins over federation; among environment variables
+  // the API key wins, matching the Anthropic SDKs.
+  const useFederation =
+    options.federation != null ||
+    (options.apiKey == null &&
+      options.authToken == null &&
+      loadOptionalSetting({
+        settingValue: undefined,
+        environmentVariableName: 'ANTHROPIC_API_KEY',
+      }) == null &&
+      hasFederationEnvironment());
+
+  const federationTokenProvider = useFederation
+    ? new AnthropicFederationTokenProvider({
+        settings: options.federation ?? {},
+        baseURL,
+        fetch: options.fetch,
+        userAgent,
+      })
+    : undefined;
+
+  const fetch =
+    federationTokenProvider != null
+      ? withFederationRetry({
+          fetch: options.fetch,
+          tokenProvider: federationTokenProvider,
+        })
+      : options.fetch;
+
+  const getAuthHeaders = async (): Promise<Record<string, string>> => {
+    if (federationTokenProvider != null) {
+      return {
+        Authorization: `Bearer ${await federationTokenProvider.getToken()}`,
+        'anthropic-beta': ANTHROPIC_OAUTH_BETA,
+      };
+    }
+
+    return options.authToken
       ? { Authorization: `Bearer ${options.authToken}` }
       : {
           'x-api-key': loadApiKey({
@@ -157,14 +237,23 @@ export function createAnthropic(
             description: 'Anthropic',
           }),
         };
+  };
+
+  const getHeaders = async () => {
+    const authHeaders = await getAuthHeaders();
+    const customHeaders = normalizeHeaders(options.headers);
 
     return withUserAgentSuffix(
       {
         'anthropic-version': '2023-06-01',
         ...authHeaders,
-        ...options.headers,
+        ...customHeaders,
+        'anthropic-beta': joinBetas(
+          authHeaders['anthropic-beta'],
+          customHeaders['anthropic-beta'],
+        ),
       },
-      `ai-sdk/anthropic/${VERSION}`,
+      userAgent,
     );
   };
 
@@ -172,7 +261,7 @@ export function createAnthropic(
     provider: providerName,
     baseURL,
     headers: getHeaders,
-    fetch: options.fetch,
+    fetch,
     generateId: options.generateId ?? generateId,
     supportedUrls: () => supportedUrls,
   };
@@ -192,7 +281,7 @@ export function createAnthropic(
       provider: `${providerName.replace('.messages', '')}.skills`,
       baseURL,
       headers: getHeaders,
-      fetch: options.fetch,
+      fetch,
     });
 
   const provider = function (modelId: AnthropicModelId) {
@@ -229,7 +318,7 @@ export function createAnthropic(
       provider: providerName,
       baseURL,
       headers: getHeaders,
-      fetch: options.fetch,
+      fetch,
     });
 
   provider.skills = createSkills;

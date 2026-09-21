@@ -50,6 +50,11 @@ You can use the following optional settings to customize the Anthropic provider 
   It defaults to the `ANTHROPIC_AUTH_TOKEN` environment variable.
   Only one of `apiKey` or `authToken` is required.
 
+- **federation** _AnthropicFederationSettings_
+
+  Authenticate with [Workload Identity Federation](#workload-identity-federation)
+  instead of a static credential. Cannot be combined with `apiKey` or `authToken`.
+
 - **headers** _Record&lt;string,string&gt;_
 
   Custom headers to include in the requests.
@@ -60,6 +65,67 @@ You can use the following optional settings to customize the Anthropic provider 
   Defaults to the global `fetch` function.
   You can use it as a middleware to intercept requests,
   or to provide a custom fetch implementation for e.g. testing.
+
+### Workload Identity Federation
+
+With [Workload Identity Federation](https://platform.claude.com/docs/en/manage-claude/workload-identity-federation)
+a deployed workload authenticates with the OIDC identity token it already has
+(from Vercel, AWS, GitHub Actions, Kubernetes, ...) instead of a static API key.
+The provider exchanges the identity token for a short-lived Anthropic access token,
+sends it as a bearer token, caches it, refreshes it ahead of expiry,
+and retries a request once with a fresh token if the API rejects the cached one.
+
+Federation is used automatically when neither `apiKey` nor `authToken` is set,
+`ANTHROPIC_API_KEY` is unset, and the `ANTHROPIC_FEDERATION_RULE_ID` and
+`ANTHROPIC_ORGANIZATION_ID` environment variables are set.
+Pass the `federation` setting to use it explicitly, or to supply the identity token from code:
+
+```ts
+import { createAnthropic } from '@ai-sdk/anthropic';
+import { getVercelOidcToken } from '@vercel/oidc';
+
+const anthropic = createAnthropic({
+  federation: {
+    // the Vercel deployment's OIDC token, read from the request context
+    identityToken: () => getVercelOidcToken(),
+  },
+});
+```
+
+The `federation` setting accepts the following options, each defaulting to the
+environment variable the Anthropic SDKs read:
+
+- **federationRuleId** _string_
+
+  Id of the federation rule (`fdrl_...`) that matches the identity token.
+  Defaults to the `ANTHROPIC_FEDERATION_RULE_ID` environment variable.
+
+- **organizationId** _string_
+
+  Id of the Anthropic organization the rule belongs to.
+  Defaults to the `ANTHROPIC_ORGANIZATION_ID` environment variable.
+
+- **serviceAccountId** _string_
+
+  Id of the service account (`svac_...`) the token is minted for.
+  Defaults to the `ANTHROPIC_SERVICE_ACCOUNT_ID` environment variable.
+
+- **workspaceId** _string_
+
+  Workspace (`wrkspc_...`) to scope the token to. Only required when the
+  federation rule enables more than one workspace.
+  Defaults to the `ANTHROPIC_WORKSPACE_ID` environment variable.
+
+- **identityToken** _string | () =&gt; string | Promise&lt;string&gt;_
+
+  The OIDC identity token asserting the workload's identity, or a function returning it.
+  The function is called on every exchange, so it can return a fresh token each time,
+  e.g. by reading a projected service account token file.
+  Defaults to the `ANTHROPIC_IDENTITY_TOKEN` environment variable.
+
+A misconfigured or rejected exchange throws an `AnthropicFederationError`,
+which carries the token endpoint's `statusCode` and `requestId`.
+A denied exchange is logged with its reason in the Claude Console's workload identity authentication history.
 
 ## Language Models
 
