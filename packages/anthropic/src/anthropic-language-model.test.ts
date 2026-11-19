@@ -13830,6 +13830,300 @@ describe('citations from documents in tool results', () => {
       }),
     ]);
   });
+
+  describe('web fetch documents', () => {
+    const webFetchTool = {
+      type: 'provider' as const,
+      id: 'anthropic.web_fetch_20250910' as const,
+      name: 'web_fetch',
+      args: { citations: { enabled: true } },
+    };
+
+    const searchTool = {
+      type: 'function' as const,
+      name: 'search',
+      inputSchema: { type: 'object' as const, properties: {} },
+    };
+
+    function createPromptWithReplayedWebFetch({
+      citationsEnabled,
+    }: {
+      citationsEnabled: boolean;
+    }): LanguageModelV4Prompt {
+      return [
+        {
+          role: 'user',
+          content: [{ type: 'text', text: 'Read the page and the doc.' }],
+        },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'srvtoolu_1',
+              toolName: 'web_fetch',
+              input: { url: 'https://example.com/page' },
+              providerExecuted: true,
+            },
+            {
+              type: 'tool-result',
+              toolCallId: 'srvtoolu_1',
+              toolName: 'web_fetch',
+              output: {
+                type: 'json',
+                value: {
+                  type: 'web_fetch_result',
+                  url: 'https://example.com/page',
+                  retrievedAt: null,
+                  content: {
+                    type: 'document',
+                    title: 'Example page',
+                    citations: { enabled: citationsEnabled },
+                    source: {
+                      type: 'text',
+                      mediaType: 'text/plain',
+                      data: 'page text',
+                    },
+                  },
+                },
+              },
+            },
+            {
+              type: 'tool-call',
+              toolCallId: 'call-1',
+              toolName: 'search',
+              input: '{}',
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'call-1',
+              toolName: 'search',
+              output: {
+                type: 'content',
+                value: [
+                  {
+                    type: 'file',
+                    mediaType: 'text/plain',
+                    filename: 'chunk.txt',
+                    data: { type: 'text', text: 'chunk text' },
+                    providerOptions: {
+                      anthropic: {
+                        citations: { enabled: true },
+                        title: 'Project doc',
+                        context: 'project-doc-1',
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ];
+    }
+
+    it('should index a replayed web fetch page before a later tool result document', async () => {
+      prepareCitationResponse([
+        {
+          type: 'char_location',
+          cited_text: 'page text',
+          document_index: 0,
+          document_title: null,
+          start_char_index: 0,
+          end_char_index: 9,
+        },
+        {
+          type: 'char_location',
+          cited_text: 'chunk text',
+          document_index: 1,
+          document_title: null,
+          start_char_index: 0,
+          end_char_index: 10,
+        },
+      ]);
+
+      const result = await createModel().doGenerate({
+        prompt: createPromptWithReplayedWebFetch({ citationsEnabled: true }),
+        tools: [webFetchTool, searchTool],
+      });
+
+      expect(result.content.filter(part => part.type === 'source')).toEqual([
+        {
+          type: 'source',
+          sourceType: 'url',
+          id: 'cite-0',
+          url: 'https://example.com/page',
+          title: 'Example page',
+          providerMetadata: {
+            anthropic: {
+              citedText: 'page text',
+              startCharIndex: 0,
+              endCharIndex: 9,
+            },
+          },
+        },
+        {
+          type: 'source',
+          sourceType: 'document',
+          id: 'cite-1',
+          mediaType: 'text/plain',
+          title: 'Project doc',
+          filename: 'chunk.txt',
+          providerMetadata: {
+            anthropic: {
+              citedText: 'chunk text',
+              startCharIndex: 0,
+              endCharIndex: 10,
+              context: 'project-doc-1',
+            },
+          },
+        },
+      ]);
+    });
+
+    it('should not give a replayed web fetch page without citations a document index', async () => {
+      prepareCitationResponse([
+        {
+          type: 'char_location',
+          cited_text: 'chunk text',
+          document_index: 0,
+          document_title: null,
+          start_char_index: 0,
+          end_char_index: 10,
+        },
+      ]);
+
+      const result = await createModel().doGenerate({
+        prompt: createPromptWithReplayedWebFetch({ citationsEnabled: false }),
+        tools: [webFetchTool, searchTool],
+      });
+
+      expect(result.content.filter(part => part.type === 'source')).toEqual([
+        expect.objectContaining({
+          sourceType: 'document',
+          title: 'Project doc',
+          filename: 'chunk.txt',
+        }),
+      ]);
+    });
+
+    const webFetchResultBlock = {
+      type: 'web_fetch_tool_result',
+      tool_use_id: 'srvtoolu_1',
+      content: {
+        type: 'web_fetch_result',
+        url: 'https://example.com/page',
+        retrieved_at: '2025-07-17T21:38:38.606000+00:00',
+        content: {
+          type: 'document',
+          title: 'Example page',
+          citations: { enabled: true },
+          source: { type: 'text', media_type: 'text/plain', data: 'page text' },
+        },
+      },
+    };
+
+    const pageCitation = {
+      type: 'char_location',
+      cited_text: 'page text',
+      document_index: 0,
+      document_title: 'Example page',
+      start_char_index: 0,
+      end_char_index: 9,
+    };
+
+    const expectedPageSource = {
+      type: 'source',
+      sourceType: 'url',
+      id: 'cite-0',
+      url: 'https://example.com/page',
+      title: 'Example page',
+      providerMetadata: {
+        anthropic: {
+          citedText: 'page text',
+          startCharIndex: 0,
+          endCharIndex: 9,
+        },
+      },
+    };
+
+    it('should cite a page fetched in the same response as a url source', async () => {
+      server.urls['https://api.anthropic.com/v1/messages'].response = {
+        type: 'json-value',
+        body: {
+          id: 'msg_1',
+          type: 'message',
+          role: 'assistant',
+          content: [
+            {
+              type: 'server_tool_use',
+              id: 'srvtoolu_1',
+              name: 'web_fetch',
+              input: { url: 'https://example.com/page' },
+            },
+            webFetchResultBlock,
+            { type: 'text', text: 'Cited answer.', citations: [pageCitation] },
+          ],
+          model: 'claude-3-haiku-20240307',
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 4, output_tokens: 30 },
+        },
+      };
+
+      const result = await createModel().doGenerate({
+        prompt: TEST_PROMPT,
+        tools: [webFetchTool],
+      });
+
+      expect(result.content.filter(part => part.type === 'source')).toEqual([
+        expectedPageSource,
+      ]);
+    });
+
+    it('should cite a page fetched in the same stream as a url source', async () => {
+      server.urls['https://api.anthropic.com/v1/messages'].response = {
+        type: 'stream-chunks',
+        chunks: [
+          `data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-3-haiku-20240307","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":17,"output_tokens":1}}}\n\n`,
+          `data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_fetch","input":{}}}\n\n`,
+          `data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"url\\":\\"https://example.com/page\\"}"}}\n\n`,
+          `data: {"type":"content_block_stop","index":0}\n\n`,
+          `data: ${JSON.stringify({
+            type: 'content_block_start',
+            index: 1,
+            content_block: webFetchResultBlock,
+          })}\n\n`,
+          `data: {"type":"content_block_stop","index":1}\n\n`,
+          `data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}\n\n`,
+          `data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Cited answer."}}\n\n`,
+          `data: ${JSON.stringify({
+            type: 'content_block_delta',
+            index: 2,
+            delta: { type: 'citations_delta', citation: pageCitation },
+          })}\n\n`,
+          `data: {"type":"content_block_stop","index":2}\n\n`,
+          `data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5}}\n\n`,
+          `data: {"type":"message_stop"}\n\n`,
+        ],
+      };
+
+      const { stream } = await createModel().doStream({
+        prompt: TEST_PROMPT,
+        tools: [webFetchTool],
+      });
+      const chunks = await convertReadableStreamToArray(stream);
+
+      expect(chunks.filter(chunk => chunk.type === 'source')).toEqual([
+        expectedPageSource,
+      ]);
+    });
+  });
 });
 
 describe('search result citations', () => {

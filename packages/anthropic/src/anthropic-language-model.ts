@@ -2,6 +2,7 @@ import {
   APICallError,
   InvalidArgumentError,
   InvalidResponseDataError,
+  isJSONObject,
   type JSONObject,
   type LanguageModelV4,
   type LanguageModelV4CallOptions,
@@ -14,6 +15,7 @@ import {
   type LanguageModelV4StreamPart,
   type LanguageModelV4StreamResult,
   type LanguageModelV4ToolCall,
+  type LanguageModelV4ToolResultOutput,
   type SharedV4ProviderMetadata,
   type SharedV4Warning,
 } from '@ai-sdk/provider';
@@ -128,7 +130,47 @@ export type CitationDocument = {
   filename?: string;
   mediaType: string;
   context?: string;
+  /**
+   * The URL of a page fetched by the `web_fetch` tool. Citations to the page
+   * become URL sources.
+   */
+  url?: string;
 };
+
+/**
+ * Returns the fetched page of a replayed `web_fetch` tool result as a citation
+ * document when the result has citations enabled. The output has the shape of
+ * `webFetch_20250910OutputSchema`, which `convertToAnthropicPrompt` validates.
+ */
+function webFetchCitationDocuments(
+  output: LanguageModelV4ToolResultOutput,
+): Array<CitationDocument> {
+  if (output.type !== 'json' || !isJSONObject(output.value)) {
+    return [];
+  }
+
+  const { type, url, content } = output.value;
+
+  if (
+    type !== 'web_fetch_result' ||
+    typeof url !== 'string' ||
+    !isJSONObject(content) ||
+    !isJSONObject(content.citations) ||
+    content.citations.enabled !== true ||
+    !isJSONObject(content.source) ||
+    typeof content.source.mediaType !== 'string'
+  ) {
+    return [];
+  }
+
+  return [
+    {
+      title: typeof content.title === 'string' ? content.title : url,
+      mediaType: content.source.mediaType,
+      url,
+    },
+  ];
+}
 
 export function createCitationSource(
   citation: Citation,
@@ -197,6 +239,32 @@ export function createCitationSource(
     return;
   }
 
+  const locationMetadata =
+    citation.type === 'page_location'
+      ? {
+          citedText: citation.cited_text,
+          startPageNumber: citation.start_page_number,
+          endPageNumber: citation.end_page_number,
+        }
+      : {
+          citedText: citation.cited_text,
+          startCharIndex: citation.start_char_index,
+          endCharIndex: citation.end_char_index,
+        };
+
+  if (documentInfo.url != null) {
+    return {
+      type: 'source' as const,
+      sourceType: 'url' as const,
+      id: generateId(),
+      url: documentInfo.url,
+      title: citation.document_title ?? documentInfo.title,
+      providerMetadata: {
+        anthropic: locationMetadata,
+      } satisfies SharedV4ProviderMetadata,
+    };
+  }
+
   return {
     type: 'source' as const,
     sourceType: 'document' as const,
@@ -206,17 +274,7 @@ export function createCitationSource(
     filename: documentInfo.filename,
     providerMetadata: {
       anthropic: {
-        ...(citation.type === 'page_location'
-          ? {
-              citedText: citation.cited_text,
-              startPageNumber: citation.start_page_number,
-              endPageNumber: citation.end_page_number,
-            }
-          : {
-              citedText: citation.cited_text,
-              startCharIndex: citation.start_char_index,
-              endCharIndex: citation.end_char_index,
-            }),
+        ...locationMetadata,
         ...(documentInfo.context != null && {
           context: documentInfo.context,
         }),
@@ -1203,8 +1261,9 @@ export class AnthropicLanguageModel implements LanguageModelV4 {
   /**
    * Collects the documents with citations enabled in the order they appear
    * in the request, so that the `document_index` of a citation can be
-   * resolved. Documents can be user file parts or file parts inside tool
-   * result content.
+   * resolved. Documents can be user file parts, file parts inside tool
+   * result content, or pages fetched by the provider-executed `web_fetch`
+   * tool in earlier assistant messages.
    */
   private extractCitationDocuments(
     prompt: LanguageModelV4Prompt,
@@ -1256,24 +1315,36 @@ export class AnthropicLanguageModel implements LanguageModelV4 {
       };
     };
 
-    return prompt
-      .flatMap(message => {
-        switch (message.role) {
-          case 'user':
-            return message.content;
-          case 'tool':
-            return message.content
+    const toFileCitationDocuments = (
+      parts: Array<Parameters<typeof isCitationPart>[0]>,
+    ): Array<CitationDocument> =>
+      parts.flatMap(part =>
+        isCitationPart(part) ? [toCitationDocument(part)] : [],
+      );
+
+    return prompt.flatMap(message => {
+      switch (message.role) {
+        case 'user':
+          return toFileCitationDocuments(message.content);
+        case 'assistant':
+          // Provider-executed web_fetch results replay as document blocks.
+          return message.content.flatMap(part =>
+            part.type === 'tool-result'
+              ? webFetchCitationDocuments(part.output)
+              : [],
+          );
+        case 'tool':
+          return toFileCitationDocuments(
+            message.content
               .filter(part => part.type === 'tool-result')
               .map(part => part.output)
               .filter(output => output.type === 'content')
-              .flatMap(output => output.value);
-          default:
-            return [];
-        }
-      })
-      .flatMap(part =>
-        isCitationPart(part) ? [toCitationDocument(part)] : [],
-      );
+              .flatMap(output => output.value),
+          );
+        default:
+          return [];
+      }
+    });
   }
 
   async doGenerate(
@@ -1573,6 +1644,7 @@ export class AnthropicLanguageModel implements LanguageModelV4 {
             citationDocuments.push({
               title: part.content.content.title ?? part.content.url,
               mediaType: part.content.content.source.media_type,
+              url: part.content.url,
             });
             content.push({
               type: 'tool-result',
@@ -2338,6 +2410,7 @@ export class AnthropicLanguageModel implements LanguageModelV4 {
                     citationDocuments.push({
                       title: part.content.content.title ?? part.content.url,
                       mediaType: part.content.content.source.media_type,
+                      url: part.content.url,
                     });
                     controller.enqueue({
                       type: 'tool-result',
