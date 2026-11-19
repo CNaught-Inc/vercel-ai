@@ -13907,6 +13907,8 @@ describe('search result citations', () => {
           anthropic: {
             citedText: 'Cited from an internal document',
             context: 'doc-42',
+            startBlockIndex: 0,
+            endBlockIndex: 1,
           },
         },
       },
@@ -13921,6 +13923,7 @@ describe('search result citations', () => {
         `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n`,
         `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Cited answer."}}\n\n`,
         `data: {"type":"content_block_delta","index":0,"delta":{"type":"citations_delta","citation":{"type":"search_result_location","cited_text":"Cited from the web","search_result_index":0,"source":"https://example.com/article","title":"Example Article","start_block_index":0,"end_block_index":0}}}\n\n`,
+        `data: {"type":"content_block_delta","index":0,"delta":{"type":"citations_delta","citation":{"type":"search_result_location","cited_text":"Cited from an internal document","search_result_index":1,"source":"doc-42","title":null,"start_block_index":2,"end_block_index":4}}}\n\n`,
         `data: {"type":"content_block_stop","index":0}\n\n`,
         `data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5}}\n\n`,
         `data: {"type":"message_stop"}\n\n`,
@@ -13939,6 +13942,21 @@ describe('search result citations', () => {
         title: 'Example Article',
         providerMetadata: {
           anthropic: { citedText: 'Cited from the web' },
+        },
+      },
+      {
+        type: 'source',
+        sourceType: 'document',
+        id: 'cite-1',
+        mediaType: 'text/plain',
+        title: 'Search Result',
+        providerMetadata: {
+          anthropic: {
+            citedText: 'Cited from an internal document',
+            context: 'doc-42',
+            startBlockIndex: 2,
+            endBlockIndex: 4,
+          },
         },
       },
     ]);

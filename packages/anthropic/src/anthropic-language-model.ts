@@ -182,6 +182,9 @@ export function createCitationSource(
           citedText: citation.cited_text,
           // the identifier of the search result, e.g. a document id
           context: citation.source,
+          // the cited range of the search result's content blocks (end exclusive)
+          startBlockIndex: citation.start_block_index,
+          endBlockIndex: citation.end_block_index,
         },
       } satisfies SharedV4ProviderMetadata,
     };
